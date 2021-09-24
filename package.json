@@ -73,7 +73,7 @@
 		"@types/clipboard": "^2.0.1",
 		"@types/dompurify": "^2.2.2",
 		"@types/ejson": "^2.1.2",
-		"@types/express": "^4.17.12",
+		"@types/express": "^4.17.13",
 		"@types/fibers": "^3.1.0",
 		"@types/imap": "^0.8.35",
 		"@types/jsdom": "^16.2.12",
