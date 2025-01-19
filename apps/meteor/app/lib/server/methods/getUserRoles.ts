@@ -1,12 +1,12 @@
-import { Meteor } from 'meteor/meteor';
 import { Authorization } from '@rocket.chat/core-services';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
-import type { IUser } from '@rocket.chat/core-typings';
+import type { IUser, IRocketChatRecord } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Meteor } from 'meteor/meteor';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
-		getUserRoles(): Pick<IUser, '_id' | 'roles' | 'username'>[];
+		getUserRoles(): (IRocketChatRecord & Pick<IUser, '_id' | 'roles' | 'username'>)[];
 	}
 }
 

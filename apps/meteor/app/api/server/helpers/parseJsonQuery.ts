@@ -1,40 +1,39 @@
+import ejson from 'ejson';
 import { Meteor } from 'meteor/meteor';
-import { EJSON } from 'meteor/ejson';
 
-import { isValidQuery } from '../lib/isValidQuery';
-import { clean } from '../lib/cleanQuery';
-import { API } from '../api';
-import type { Logger } from '../../../logger/server';
 import { hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
+import { apiDeprecationLogger } from '../../../lib/server/lib/deprecationWarningLogger';
+import { API } from '../api';
+import type { PartialThis } from '../definition';
+import { clean } from '../lib/cleanQuery';
+import { isValidQuery } from '../lib/isValidQuery';
 
 const pathAllowConf = {
 	'/api/v1/users.list': ['$or', '$regex', '$and'],
 	'def': ['$or', '$and', '$regex'],
 };
 
-const warnFields =
-	process.env.NODE_ENV !== 'production' || process.env.SHOW_WARNINGS === 'true'
-		? (...rest: any): void => {
-				console.warn(...rest, new Error().stack);
-		  }
-		: new Function();
-
-export async function parseJsonQuery(
-	route: string,
-	userId: string,
-	params: {
-		query?: string;
-		sort?: string;
-		fields?: string;
-	},
-	logger: Logger,
-	queryFields?: string[],
-	queryOperations?: string[],
-): Promise<{
+export async function parseJsonQuery(api: PartialThis): Promise<{
 	sort: Record<string, 1 | -1>;
+	/**
+	 * @deprecated To access "fields" parameter, use ALLOW_UNSAFE_QUERY_AND_FIELDS_API_PARAMS environment variable.
+	 */
 	fields: Record<string, 0 | 1>;
+	/**
+	 * @deprecated To access "query" parameter, use ALLOW_UNSAFE_QUERY_AND_FIELDS_API_PARAMS environment variable.
+	 */
 	query: Record<string, unknown>;
 }> {
+	const {
+		request: { route },
+		userId,
+		queryParams: params,
+		logger,
+		queryFields,
+		queryOperations,
+		response,
+	} = api;
+
 	let sort;
 	if (params.sort) {
 		try {
@@ -54,12 +53,15 @@ export async function parseJsonQuery(
 		}
 	}
 
-	let fields: Record<string, 0 | 1> | undefined;
-	if (params.fields) {
-		warnFields('attribute fields is deprecated');
-		try {
-			fields = JSON.parse(params.fields) as Record<string, 0 | 1>;
+	const isUnsafeQueryParamsAllowed = process.env.ALLOW_UNSAFE_QUERY_AND_FIELDS_API_PARAMS?.toUpperCase() === 'TRUE';
+	const messageGenerator = ({ endpoint, version, parameter }: { endpoint: string; version: string; parameter: string }): string =>
+		`The usage of the "${parameter}" parameter in endpoint "${endpoint}" breaks the security of the API and can lead to data exposure. It has been deprecated and will be removed in the version ${version}.`;
 
+	let fields: Record<string, 0 | 1> | undefined;
+	if (params.fields && isUnsafeQueryParamsAllowed) {
+		try {
+			apiDeprecationLogger.parameter(route, 'fields', '8.0.0', response, messageGenerator);
+			fields = JSON.parse(params.fields) as Record<string, 0 | 1>;
 			Object.entries(fields).forEach(([key, value]) => {
 				if (value !== 1 && value !== 0) {
 					throw new Meteor.Error('error-invalid-sort-parameter', `Invalid fields parameter: ${key}`, {
@@ -106,11 +108,10 @@ export async function parseJsonQuery(
 	}
 
 	let query: Record<string, any> = {};
-	if (params.query) {
-		warnFields('attribute query is deprecated');
-
+	if (params.query && isUnsafeQueryParamsAllowed) {
+		apiDeprecationLogger.parameter(route, 'query', '8.0.0', response, messageGenerator);
 		try {
-			query = EJSON.parse(params.query);
+			query = ejson.parse(params.query);
 			query = clean(query, pathAllowConf.def);
 		} catch (e) {
 			logger.warn(`Invalid query parameter provided "${params.query}":`, e);

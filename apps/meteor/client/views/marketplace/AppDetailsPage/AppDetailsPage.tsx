@@ -1,105 +1,104 @@
 import type { ISetting } from '@rocket.chat/apps-engine/definition/settings';
-import type { App } from '@rocket.chat/core-typings';
-import { Button, ButtonGroup, Box, Throbber } from '@rocket.chat/fuselage';
-import { useMutableCallback } from '@rocket.chat/fuselage-hooks';
-import {
-	useTranslation,
-	useCurrentRoute,
-	useRoute,
-	useRouteParameter,
-	useToastMessageDispatch,
-	usePermission,
-} from '@rocket.chat/ui-contexts';
+import type { App, SettingValue } from '@rocket.chat/core-typings';
+import { Button, ButtonGroup, Box } from '@rocket.chat/fuselage';
+import { useEffectEvent } from '@rocket.chat/fuselage-hooks';
+import { useTranslation, useRouteParameter, useToastMessageDispatch, usePermission, useRouter } from '@rocket.chat/ui-contexts';
 import type { ReactElement } from 'react';
-import React, { useState, useCallback, useRef } from 'react';
+import { useMemo, useCallback } from 'react';
+import { FormProvider, useForm } from 'react-hook-form';
 
-import type { ISettings } from '../../../../ee/client/apps/@types/IOrchestrator';
-import { Apps } from '../../../../ee/client/apps/orchestrator';
-import Page from '../../../components/Page';
-import { handleAPIError } from '../helpers';
-import { useAppInfo } from '../hooks/useAppInfo';
 import AppDetailsPageHeader from './AppDetailsPageHeader';
 import AppDetailsPageLoading from './AppDetailsPageLoading';
 import AppDetailsPageTabs from './AppDetailsPageTabs';
+import { handleAPIError } from '../helpers/handleAPIError';
+import { useAppInfo } from '../hooks/useAppInfo';
 import AppDetails from './tabs/AppDetails';
 import AppLogs from './tabs/AppLogs';
 import AppReleases from './tabs/AppReleases';
 import AppRequests from './tabs/AppRequests/AppRequests';
 import AppSecurity from './tabs/AppSecurity/AppSecurity';
 import AppSettings from './tabs/AppSettings';
+import { AppClientOrchestratorInstance } from '../../../apps/orchestrator';
+import { Page, PageFooter, PageHeader, PageScrollableContentWithShadow } from '../../../components/Page';
 
-const AppDetailsPage = ({ id }: { id: App['id'] }): ReactElement => {
+type AppDetailsPageFormData = Record<string, SettingValue>;
+
+type AppDetailsPageProps = {
+	id: App['id'];
+};
+
+const AppDetailsPage = ({ id }: AppDetailsPageProps): ReactElement => {
 	const t = useTranslation();
+	const router = useRouter();
 	const dispatchToastMessage = useToastMessageDispatch();
-
-	const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
-	const [isSaving, setIsSaving] = useState(false);
-
-	const settingsRef = useRef<Record<string, ISetting['value']>>({});
 	const isAdminUser = usePermission('manage-apps');
-
-	const [currentRouteName] = useCurrentRoute();
-	if (!currentRouteName) {
-		throw new Error('No current route name');
-	}
-	const router = useRoute(currentRouteName);
 
 	const tab = useRouteParameter('tab');
 	const context = useRouteParameter('context');
-
 	const appData = useAppInfo(id, context || '');
 
-	const handleReturn = useMutableCallback((): void => {
-		context && router.push({ context, page: 'list' });
+	const handleReturn = useEffectEvent((): void => {
+		if (!context) {
+			return;
+		}
+
+		router.navigate({
+			name: 'marketplace',
+			params: { context, page: 'list' },
+		});
 	});
 
-	const { installed, settings, privacyPolicySummary, permissions, tosLink, privacyLink, marketplace, name } = appData || {};
+	const { installed, settings, privacyPolicySummary, permissions, tosLink, privacyLink, name } = appData || {};
 	const isSecurityVisible = Boolean(privacyPolicySummary || permissions || tosLink || privacyLink);
 
-	const saveAppSettings = useCallback(async () => {
-		const { current } = settingsRef;
-		setIsSaving(true);
-		try {
-			await Apps.setAppSettings(
-				id,
-				(Object.values(settings || {}) as ISetting[]).map((value) => ({
-					...value,
-					value: current?.[value.id],
-				})),
-			);
+	const saveAppSettings = useCallback(
+		async (data: AppDetailsPageFormData) => {
+			try {
+				await AppClientOrchestratorInstance.setAppSettings(
+					id,
+					(Object.values(settings || {}) as ISetting[]).map((setting) => ({
+						...setting,
+						value: data[setting.id],
+					})),
+				);
 
-			dispatchToastMessage({ type: 'success', message: `${name} settings saved succesfully` });
-		} catch (e: any) {
-			handleAPIError(e);
-		}
-		setIsSaving(false);
-	}, [dispatchToastMessage, id, name, settings]);
+				dispatchToastMessage({ type: 'success', message: `${name} settings saved succesfully` });
+			} catch (e: any) {
+				handleAPIError(e);
+			}
+		},
+		[dispatchToastMessage, id, name, settings],
+	);
+
+	const reducedSettings = useMemo((): AppDetailsPageFormData => {
+		return Object.values(settings || {}).reduce(
+			(ret: AppDetailsPageFormData, { id, value, packageValue }) => ({ ...ret, [id]: value ?? packageValue }),
+			{},
+		);
+	}, [settings]);
+
+	const methods = useForm<AppDetailsPageFormData>({ values: reducedSettings });
+	const {
+		handleSubmit,
+		reset,
+		formState: { isDirty, isSubmitting, isSubmitted },
+	} = methods;
 
 	return (
 		<Page flexDirection='column' h='full'>
-			<Page.Header title={t('App_Info')} onClickBack={handleReturn}>
-				<ButtonGroup>
-					{installed && isAdminUser && (
-						<Button primary disabled={!hasUnsavedChanges || isSaving} onClick={saveAppSettings}>
-							{!isSaving && t('Save_changes')}
-							{isSaving && <Throbber inheritColor />}
-						</Button>
-					)}
-				</ButtonGroup>
-			</Page.Header>
-			<Page.ScrollableContentWithShadow pi='x24' pbs='x24' pbe='0' h='full'>
+			<PageHeader title={t('App_Info')} onClickBack={handleReturn} />
+			<PageScrollableContentWithShadow pi={24} pbs={24} pbe={0} h='full'>
 				<Box w='full' alignSelf='center' h='full' display='flex' flexDirection='column'>
 					{!appData && <AppDetailsPageLoading />}
 					{appData && (
 						<>
 							<AppDetailsPageHeader app={appData} />
 							<AppDetailsPageTabs
+								context={context || ''}
 								installed={installed}
 								isSecurityVisible={isSecurityVisible}
-								marketplace={marketplace}
 								settings={settings}
 								tab={tab}
-								context={context || ''}
 							/>
 							{Boolean(!tab || tab === 'details') && <AppDetails app={appData} />}
 							{tab === 'requests' && <AppRequests id={id} isAdminUser={isAdminUser} />}
@@ -113,17 +112,25 @@ const AppDetailsPage = ({ id }: { id: App['id'] }): ReactElement => {
 							)}
 							{tab === 'releases' && <AppReleases id={id} />}
 							{Boolean(tab === 'settings' && settings && Object.values(settings).length) && (
-								<AppSettings
-									settings={settings || ({} as ISettings)}
-									setHasUnsavedChanges={setHasUnsavedChanges}
-									settingsRef={settingsRef}
-								/>
+								<FormProvider {...methods}>
+									<AppSettings settings={settings || {}} />
+								</FormProvider>
 							)}
 							{tab === 'logs' && <AppLogs id={id} />}
 						</>
 					)}
 				</Box>
-			</Page.ScrollableContentWithShadow>
+			</PageScrollableContentWithShadow>
+			<PageFooter isDirty={isDirty}>
+				<ButtonGroup>
+					<Button onClick={() => reset()}>{t('Cancel')}</Button>
+					{installed && isAdminUser && (
+						<Button primary loading={isSubmitting || isSubmitted} onClick={handleSubmit(saveAppSettings)}>
+							{t('Save_changes')}
+						</Button>
+					)}
+				</ButtonGroup>
+			</PageFooter>
 		</Page>
 	);
 };

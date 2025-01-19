@@ -1,8 +1,8 @@
 import type { IUser } from '@rocket.chat/core-typings';
 
-import { TOTP } from '../lib/totp';
-import { settings } from '../../../settings/server';
 import type { ICodeCheck, IProcessInvalidCodeResult } from './ICodeCheck';
+import { settings } from '../../../settings/server';
+import { TOTP } from '../lib/totp';
 
 export class TOTPCheck implements ICodeCheck {
 	public readonly name = 'totp';
@@ -37,5 +37,9 @@ export class TOTPCheck implements ICodeCheck {
 		return {
 			codeGenerated: false,
 		};
+	}
+
+	public async maxFaildedAttemtpsReached(_user: IUser): Promise<boolean> {
+		return false;
 	}
 }

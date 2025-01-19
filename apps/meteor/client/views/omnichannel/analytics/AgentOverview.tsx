@@ -1,7 +1,8 @@
-import { Table } from '@rocket.chat/fuselage';
+import { Table, TableBody, TableCell, TableHead, TableRow } from '@rocket.chat/fuselage';
 import type { TranslationKey } from '@rocket.chat/ui-contexts';
-import { useMethod, useTranslation } from '@rocket.chat/ui-contexts';
-import React, { useMemo, useEffect, useState } from 'react';
+import { useEndpoint } from '@rocket.chat/ui-contexts';
+import { useMemo, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 const style = { width: '100%' };
 
@@ -14,24 +15,25 @@ const AgentOverview = ({
 	dateRange: { start: string; end: string };
 	departmentId: string;
 }) => {
-	const t = useTranslation();
+	const { t } = useTranslation();
 	const { start, end } = dateRange;
 
 	const params = useMemo(
 		() => ({
-			chartOptions: { name: type },
-			daterange: { from: start, to: end },
+			name: type,
+			from: start,
+			to: end,
 			...(departmentId && { departmentId }),
 		}),
 		[departmentId, end, start, type],
 	);
 
-	const [displayData, setDisplayData] = useState<{ head: { name: TranslationKey }[]; data: { name: string; value: number | string }[] }>({
+	const [displayData, setDisplayData] = useState<{ head: { name: string }[]; data: { name: string; value: number | string }[] }>({
 		head: [],
 		data: [],
 	});
 
-	const loadData = useMethod('livechat:getAgentOverviewData');
+	const loadData = useEndpoint('GET', '/v1/livechat/analytics/agent-overview');
 
 	useEffect(() => {
 		async function fetchData() {
@@ -46,21 +48,17 @@ const AgentOverview = ({
 
 	return (
 		<Table style={style} fixed>
-			<Table.Head>
-				<Table.Row>
-					{displayData.head?.map(({ name }, i) => (
-						<Table.Cell key={i}>{t(name)}</Table.Cell>
-					))}
-				</Table.Row>
-			</Table.Head>
-			<Table.Body>
+			<TableHead>
+				<TableRow>{displayData.head?.map(({ name }, i) => <TableCell key={i}>{t(name as TranslationKey)}</TableCell>)}</TableRow>
+			</TableHead>
+			<TableBody>
 				{displayData.data?.map(({ name, value }, i) => (
-					<Table.Row key={i}>
-						<Table.Cell>{name}</Table.Cell>
-						<Table.Cell>{value}</Table.Cell>
-					</Table.Row>
+					<TableRow key={i}>
+						<TableCell>{name}</TableCell>
+						<TableCell>{value}</TableCell>
+					</TableRow>
 				))}
-			</Table.Body>
+			</TableBody>
 		</Table>
 	);
 };

@@ -1,15 +1,16 @@
-import { Meteor } from 'meteor/meteor';
-import { check } from 'meteor/check';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
 import type { ISubscription } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
 import { Subscriptions } from '@rocket.chat/models';
+import { check } from 'meteor/check';
+import { Meteor } from 'meteor/meteor';
 
-import { getUserNotificationPreference } from '../../../utils/server';
+import { notifyOnSubscriptionChangedById } from '../../../lib/server/lib/notifyListener';
+import { getUserNotificationPreference } from '../../../utils/server/getUserNotificationPreference';
 
 const saveAudioNotificationValue = (subId: ISubscription['_id'], value: string) =>
 	value === 'default' ? Subscriptions.clearAudioNotificationValueById(subId) : Subscriptions.updateAudioNotificationValueById(subId, value);
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		saveNotificationSettings(
@@ -42,9 +43,16 @@ Meteor.methods<ServerMethods>({
 		check(field, String);
 		check(value, String);
 
-		const getNotificationPrefValue = (field: string, value: unknown) => {
+		const getNotificationPrefValue = async (field: string, value: unknown) => {
 			if (value === 'default') {
-				const userPref = getUserNotificationPreference(Meteor.userId(), field);
+				const userId = Meteor.userId();
+				if (!userId) {
+					throw new Meteor.Error('error-invalid-user', 'Invalid user', {
+						method: 'saveNotificationSettings',
+					});
+				}
+
+				const userPref = await getUserNotificationPreference(userId, field);
 				return userPref?.origin === 'server' ? null : userPref;
 			}
 			return { value, origin: 'subscription' };
@@ -52,28 +60,28 @@ Meteor.methods<ServerMethods>({
 
 		const notifications = {
 			desktopNotifications: {
-				updateMethod: (subscription: ISubscription, value: unknown) =>
+				updateMethod: async (subscription: ISubscription, value: unknown) =>
 					Subscriptions.updateNotificationsPrefById(
 						subscription._id,
-						getNotificationPrefValue('desktop', value),
+						await getNotificationPrefValue('desktop', value),
 						'desktopNotifications',
 						'desktopPrefOrigin',
 					),
 			},
 			mobilePushNotifications: {
-				updateMethod: (subscription: ISubscription, value: unknown) =>
+				updateMethod: async (subscription: ISubscription, value: unknown) =>
 					Subscriptions.updateNotificationsPrefById(
 						subscription._id,
-						getNotificationPrefValue('mobile', value),
+						await getNotificationPrefValue('mobile', value),
 						'mobilePushNotifications',
 						'mobilePrefOrigin',
 					),
 			},
 			emailNotifications: {
-				updateMethod: (subscription: ISubscription, value: unknown) =>
+				updateMethod: async (subscription: ISubscription, value: unknown) =>
 					Subscriptions.updateNotificationsPrefById(
 						subscription._id,
-						getNotificationPrefValue('email', value),
+						await getNotificationPrefValue('email', value),
 						'emailNotifications',
 						'emailPrefOrigin',
 					),
@@ -125,7 +133,10 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		await notifications[field].updateMethod(subscription, value);
+		const updateResponse = await notifications[field].updateMethod(subscription, value);
+		if (updateResponse.modifiedCount) {
+			void notifyOnSubscriptionChangedById(subscription._id);
+		}
 
 		return true;
 	},
@@ -137,13 +148,19 @@ Meteor.methods<ServerMethods>({
 				method: 'saveAudioNotificationValue',
 			});
 		}
+
 		const subscription = await Subscriptions.findOneByRoomIdAndUserId(rid, userId);
 		if (!subscription) {
 			throw new Meteor.Error('error-invalid-subscription', 'Invalid subscription', {
 				method: 'saveAudioNotificationValue',
 			});
 		}
-		await saveAudioNotificationValue(subscription._id, value);
+
+		const saveAudioNotificationResponse = await saveAudioNotificationValue(subscription._id, value);
+		if (saveAudioNotificationResponse.modifiedCount) {
+			void notifyOnSubscriptionChangedById(subscription._id);
+		}
+
 		return true;
 	},
 });

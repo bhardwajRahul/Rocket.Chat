@@ -3,10 +3,9 @@ import type {
 	IRoom,
 	IUser,
 	ILivechatDepartment,
-	ILivechatPriority,
-	IOmnichannelServiceLevelAgreements,
 	MessageTypesValues,
 	MessageAttachment,
+	IMessageWithPendingFileImport,
 } from '@rocket.chat/core-typings';
 import type {
 	AggregationCursor,
@@ -19,10 +18,18 @@ import type {
 	UpdateResult,
 	Document,
 	Filter,
+	WithId,
 } from 'mongodb';
 
 import type { FindPaginated, IBaseModel } from './IBaseModel';
 
+type PaginatedRequest<S extends string = string> = {
+	count?: number;
+	offset?: number;
+	sort?: `{ "${S}": ${1 | -1} }` | string;
+	/* deprecated */
+	query?: string;
+};
 export interface IMessagesModel extends IBaseModel<IMessage> {
 	findPaginatedVisibleByMentionAndRoomId(
 		username: IUser['username'],
@@ -44,19 +51,32 @@ export interface IMessagesModel extends IBaseModel<IMessage> {
 
 	findDiscussionsByRoomAndText(rid: IRoom['_id'], text: string, options?: FindOptions<IMessage>): FindPaginated<FindCursor<IMessage>>;
 
-	findAllNumberOfTransferredRooms(params: {
-		start: string;
-		end: string;
-		departmentId: ILivechatDepartment['_id'];
-		onlyCount: boolean;
-		options: any;
-	}): AggregationCursor<any>;
+	findAllNumberOfTransferredRooms(p: {
+		start: Date;
+		end: Date;
+		departmentId?: ILivechatDepartment['_id'];
+		onlyCount: true;
+		options?: PaginatedRequest;
+	}): AggregationCursor<{ total: number }>;
+
+	findAllNumberOfTransferredRooms(p: {
+		start: Date;
+		end: Date;
+		departmentId?: ILivechatDepartment['_id'];
+		onlyCount?: false;
+		options?: PaginatedRequest;
+	}): AggregationCursor<{ _id: string | null; numberOfTransferredRooms: number }>;
 
 	getTotalOfMessagesSentByDate(params: { start: Date; end: Date; options?: any }): Promise<any[]>;
 
 	findLivechatClosedMessages(rid: IRoom['_id'], searchTerm?: string, options?: FindOptions<IMessage>): FindPaginated<FindCursor<IMessage>>;
 	findLivechatMessages(rid: IRoom['_id'], options?: FindOptions<IMessage>): FindCursor<IMessage>;
-	findLivechatMessagesWithoutClosing(rid: IRoom['_id'], options?: FindOptions<IMessage>): FindCursor<IMessage>;
+	findLivechatMessagesWithoutTypes(
+		rid: IRoom['_id'],
+		ignoredTypes: IMessage['t'][],
+		showSystemMessages: boolean,
+		options?: FindOptions<IMessage>,
+	): FindCursor<IMessage>;
 	countRoomsWithStarredMessages(options: AggregateOptions): Promise<number>;
 
 	countRoomsWithPinnedMessages(options: AggregateOptions): Promise<number>;
@@ -85,18 +105,6 @@ export interface IMessagesModel extends IBaseModel<IMessage> {
 
 	setFederationEventIdById(_id: string, federationEventId: string): Promise<void>;
 
-	createPriorityHistoryWithRoomIdMessageAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		priority?: Pick<ILivechatPriority, 'name' | 'i18n'>,
-	): Promise<InsertOneResult<IMessage>>;
-
-	createSLAHistoryWithRoomIdMessageAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		sla?: Pick<IOmnichannelServiceLevelAgreements, 'name'>,
-	): Promise<InsertOneResult<IMessage>>;
-
 	removeByRoomId(roomId: IRoom['_id']): Promise<DeleteResult>;
 
 	findVisibleByRoomIdNotContainingTypesAndUsers(
@@ -110,11 +118,13 @@ export interface IMessagesModel extends IBaseModel<IMessage> {
 		roomId: IRoom['_id'],
 		types: IMessage['t'][],
 		ts: Date,
+		showSystemMessages: boolean,
 		options?: FindOptions<IMessage>,
 		showThreadMessages?: boolean,
 	): FindCursor<IMessage>;
 
 	findLivechatClosingMessage(rid: IRoom['_id'], options?: FindOptions<IMessage>): Promise<IMessage | null>;
+
 	setReactions(messageId: string, reactions: IMessage['reactions']): Promise<UpdateResult>;
 	keepHistoryForToken(token: string): Promise<UpdateResult | Document>;
 	setRoomIdByToken(token: string, rid: string): Promise<UpdateResult | Document>;
@@ -122,21 +132,12 @@ export interface IMessagesModel extends IBaseModel<IMessage> {
 		type: MessageTypesValues,
 		rid: string,
 		message: string,
-		user: Pick<IMessage['u'], '_id' | 'username'>,
+		user: Pick<IMessage['u'], '_id' | 'username' | 'name'>,
 		unread?: boolean,
 		extraData?: Partial<IMessage>,
 	): Promise<InsertOneResult<IMessage>>;
 	unsetReactions(messageId: string): Promise<UpdateResult>;
 	deleteOldOTRMessages(roomId: string, ts: Date): Promise<DeleteResult>;
-	updateOTRAck(_id: string, otrAck: string): Promise<UpdateResult>;
-	createRoomSettingsChangedWithTypeRoomIdMessageAndUser(
-		type: MessageTypesValues,
-		roomId: string,
-		message: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, any>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
 	addTranslations(messageId: string, translations: Record<string, string>, providerName: string): Promise<UpdateResult>;
 	addAttachmentTranslations(messageId: string, attachmentIndex: string, translations: Record<string, string>): Promise<UpdateResult>;
 	setImportFileRocketChatAttachment(
@@ -166,7 +167,7 @@ export interface IMessagesModel extends IBaseModel<IMessage> {
 		ignoreThreads: boolean,
 		options?: FindOptions<IMessage>,
 	): FindCursor<IMessage>;
-	findVisibleByRoomId(rid: string, options?: FindOptions<IMessage>): FindCursor<IMessage>;
+	findVisibleByRoomId<T extends IMessage = IMessage>(rid: string, options?: FindOptions<T>): FindCursor<T>;
 	findDiscussionByRoomIdPinnedTimestampAndUsers(
 		rid: string,
 		excludePinned: boolean,
@@ -205,20 +206,22 @@ export interface IMessagesModel extends IBaseModel<IMessage> {
 	getLastTimestamp(options?: FindOptions<IMessage>): Promise<Date | undefined>;
 	findOneBySlackBotIdAndSlackTs(slackBotId: string, slackTs: Date): Promise<IMessage | null>;
 	findByRoomIdAndMessageIds(rid: string, messageIds: string[], options?: FindOptions<IMessage>): FindCursor<IMessage>;
-	findForUpdates(roomId: string, timestamp: Date, options?: FindOptions<IMessage>): FindCursor<IMessage>;
+	findForUpdates(roomId: IMessage['rid'], timestamp: { $lt: Date } | { $gt: Date }, options?: FindOptions<IMessage>): FindCursor<IMessage>;
 	updateUsernameOfEditByUserId(userId: string, username: string): Promise<UpdateResult | Document>;
 	updateAllUsernamesByUserId(userId: string, username: string): Promise<UpdateResult | Document>;
 
 	setUrlsById(_id: string, urls: NonNullable<IMessage['urls']>): Promise<UpdateResult>;
-	getLastVisibleMessageSentWithNoTypeByRoomId(rid: string, messageId?: string): Promise<IMessage | null>;
+	getLastVisibleUserMessageSentByRoomId(rid: string, messageId?: string): Promise<IMessage | null>;
 
-	findByRoomId(roomId: string, options?: FindOptions<IMessage>): FindCursor<IMessage>;
 	findOneBySlackTs(slackTs: Date): Promise<IMessage | null>;
 
 	cloneAndSaveAsHistoryById(_id: string, user: IMessage['u']): Promise<InsertOneResult<IMessage>>;
+	cloneAndSaveAsHistoryByRecord(record: IMessage, user: IMessage['u']): Promise<InsertOneResult<IMessage>>;
 
 	setAsDeletedByIdAndUser(_id: string, user: IMessage['u']): Promise<UpdateResult>;
+	setAsDeletedByIdsAndUser(_ids: string[], user: IMessage['u']): Promise<Document | UpdateResult>;
 	setHiddenById(_id: string, hidden: boolean): Promise<UpdateResult>;
+	setHiddenByIds(_ids: string[], hidden: boolean): Promise<Document | UpdateResult>;
 	setPinnedByIdAndUserId(
 		_id: string,
 		pinnedBy: Pick<IUser, '_id' | 'username'> | undefined,
@@ -234,195 +237,11 @@ export interface IMessagesModel extends IBaseModel<IMessage> {
 		newUsername: string,
 		newMessage: string,
 	): Promise<UpdateResult>;
-	createWithTypeRoomIdMessageAndUser(
-		type: MessageTypesValues,
-		roomId: string,
-		message: string,
-		user: Pick<IMessage['u'], '_id' | 'username'>,
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
 	unlinkUserId(userId: string, newUserId: string, newUsername: string, newNameAlias: string): Promise<UpdateResult | Document>;
 	setSlackBotIdAndSlackTs(_id: string, slackBotId: string, slackTs: Date): Promise<UpdateResult>;
 	setMessageAttachments(_id: string, attachments: IMessage['attachments']): Promise<UpdateResult>;
 
-	createNavigationHistoryWithRoomIdMessageAndUser(
-		roomId: string,
-		message: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createUserLeaveWithRoomIdAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createUserConvertChannelToTeamWithRoomIdAndUser(
-		roomId: string,
-		roomName: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createUserLeaveTeamWithRoomIdAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createUserJoinWithRoomIdAndUserDiscussion(
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createUserJoinTeamWithRoomIdAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createUserConvertTeamToChannelWithRoomIdAndUser(
-		roomId: string,
-		roomName: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-
-	createUserJoinWithRoomIdAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createUserRemovedWithRoomIdAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createUserRemoveRoomFromTeamWithRoomIdAndUser(
-		roomId: string,
-		roomName: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createUserAddRoomToTeamWithRoomIdAndUser(
-		roomId: string,
-		roomName: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createUserDeleteRoomFromTeamWithRoomIdAndUser(
-		roomId: string,
-		roomName: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createUserAddedWithRoomIdAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createUserRemovedFromTeamWithRoomIdAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-
-	createUserAddedToTeamWithRoomIdAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-
-	createCommandWithRoomIdAndUser(
-		command: string,
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createUserMutedWithRoomIdAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createUserUnmutedWithRoomIdAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createNewModeratorWithRoomIdAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createModeratorRemovedWithRoomIdAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-
-	createNewOwnerWithRoomIdAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createOtrSystemMessagesWithRoomIdAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		id: MessageTypesValues,
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createSubscriptionRoleRemovedWithRoomIdAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
 	removeByRoomIds(rids: string[]): Promise<DeleteResult>;
-	removeById(_id: string): Promise<DeleteResult>;
-	createOwnerRemovedWithRoomIdAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createSubscriptionRoleAddedWithRoomIdAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-	createLeaderRemovedWithRoomIdAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
-
-	createNewLeaderWithRoomIdAndUser(
-		roomId: string,
-		user: IMessage['u'],
-		readReceiptsEnabled?: boolean,
-		extraData?: Record<string, string>,
-	): Promise<Omit<IMessage, '_updatedAt'>>;
 
 	findThreadsByRoomIdPinnedTimestampAndUsers(
 		data: { rid: string; pinned: boolean; ignoreDiscussion?: boolean; ts: Filter<IMessage>['ts']; users: string[] },
@@ -431,13 +250,23 @@ export interface IMessagesModel extends IBaseModel<IMessage> {
 
 	removeByIdPinnedTimestampLimitAndUsers(
 		rid: string,
-		pinned: boolean,
+		ignorePinned: boolean,
 		ignoreDiscussion: boolean,
 		ts: Filter<IMessage>['ts'],
 		limit: number,
 		users: string[],
 		ignoreThreads: boolean,
+		selectedMessageIds?: string[],
 	): Promise<number>;
+	findByIdPinnedTimestampLimitAndUsers(
+		rid: string,
+		ignorePinned: boolean,
+		ignoreDiscussion: boolean,
+		ts: Filter<IMessage>['ts'],
+		limit: number,
+		users: string[],
+		ignoreThreads: boolean,
+	): Promise<string[]>;
 	removeByUserId(userId: string): Promise<DeleteResult>;
 	getThreadFollowsByThreadId(tmid: string): Promise<string[] | undefined>;
 	setVisibleMessagesAsRead(rid: string, until: Date): Promise<UpdateResult | Document>;
@@ -445,17 +274,23 @@ export interface IMessagesModel extends IBaseModel<IMessage> {
 	getMessageByFileId(fileID: string): Promise<IMessage | null>;
 	setThreadMessagesAsRead(tmid: string, until: Date): Promise<UpdateResult | Document>;
 	updateRepliesByThreadId(tmid: string, replies: string[], ts: Date): Promise<UpdateResult>;
-	refreshDiscussionMetadata(room: Pick<IRoom, '_id' | 'msgs' | 'lm'>): Promise<UpdateResult | Document | false>;
-	findUnreadThreadMessagesByDate(tmid: string, userId: string, after: Date): FindCursor<Pick<IMessage, '_id'>>;
-	findVisibleUnreadMessagesByRoomAndDate(rid: string, after: Date): FindCursor<Pick<IMessage, '_id'>>;
+	refreshDiscussionMetadata(room: Pick<IRoom, '_id' | 'msgs' | 'lm'>): Promise<null | WithId<IMessage>>;
+	findUnreadThreadMessagesByDate(
+		tmid: string,
+		userId: string,
+		after: Date,
+	): FindCursor<Pick<IMessage, '_id' | 't' | 'pinned' | 'drid' | 'tmid'>>;
+	findVisibleUnreadMessagesByRoomAndDate(rid: string, after: Date): FindCursor<Pick<IMessage, '_id' | 't' | 'pinned' | 'drid' | 'tmid'>>;
 	setAsReadById(_id: string): Promise<UpdateResult>;
 	countThreads(): Promise<number>;
 	addThreadFollowerByThreadId(tmid: string, userId: string): Promise<UpdateResult>;
-	findAllImportedMessagesWithFilesToDownload(): FindCursor<IMessage>;
+	findAllImportedMessagesWithFilesToDownload(): FindCursor<IMessageWithPendingFileImport>;
 	countAllImportedMessagesWithFilesToDownload(): Promise<number>;
 	findAgentLastMessageByVisitorLastMessageTs(roomId: string, visitorLastMessageTs: Date): Promise<IMessage | null>;
 	removeThreadFollowerByThreadId(tmid: string, userId: string): Promise<UpdateResult>;
 
 	findThreadsByRoomId(rid: string, skip: number, limit: number): FindCursor<IMessage>;
-	decreaseReplyCountById(_id: string, inc?: number): Promise<UpdateResult>;
+	decreaseReplyCountById(_id: string, inc?: number): Promise<IMessage | null>;
+	countPinned(options?: CountDocumentsOptions): Promise<number>;
+	countStarred(options?: CountDocumentsOptions): Promise<number>;
 }

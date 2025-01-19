@@ -1,13 +1,13 @@
+import { Team } from '@rocket.chat/core-services';
+import { Users, Subscriptions as SubscriptionsRaw, Rooms } from '@rocket.chat/models';
 import { escapeRegExp } from '@rocket.chat/string-helpers';
-import { Users, Subscriptions as SubscriptionsRaw, Rooms as RoomsRaw } from '@rocket.chat/models';
 
 import { canAccessRoomAsync, roomAccessAttributes } from '../../app/authorization/server';
 import { hasPermissionAsync, hasAllPermissionAsync } from '../../app/authorization/server/functions/hasPermission';
-import { Rooms } from '../../app/models/server';
 import { settings } from '../../app/settings/server';
+import { trim } from '../../lib/utils/stringUtils';
 import { readSecondaryPreferred } from '../database/readSecondaryPreferred';
 import { roomCoordinator } from './rooms/roomCoordinator';
-import { trim } from '../../lib/utils/stringUtils';
 
 export class Spotlight {
 	async fetchRooms(userId, rooms) {
@@ -26,13 +26,15 @@ export class Spotlight {
 
 		const roomOptions = {
 			limit: 5,
-			fields: {
+			projection: {
 				t: 1,
 				name: 1,
 				fname: 1,
+				teamMain: 1,
 				joinCodeRequired: 1,
 				lastMessage: 1,
 				federated: true,
+				prid: 1,
 			},
 			sort: {
 				name: 1,
@@ -44,7 +46,7 @@ export class Spotlight {
 				return [];
 			}
 
-			return this.fetchRooms(userId, await RoomsRaw.findByNameAndTypeNotDefault(regex, 'c', roomOptions, includeFederatedRooms).toArray());
+			return this.fetchRooms(userId, await Rooms.findByNameAndTypeNotDefault(regex, 'c', roomOptions, includeFederatedRooms).toArray());
 		}
 
 		if (!(await hasAllPermissionAsync(userId, ['view-outside-room', 'view-c-room']))) {
@@ -58,14 +60,14 @@ export class Spotlight {
 				projection: { rid: 1 },
 			}).toArray()
 		).map((s) => s.rid);
-		const exactRoom = await RoomsRaw.findOneByNameAndType(text, searchableRoomTypeIds, roomOptions, includeFederatedRooms);
+		const exactRoom = await Rooms.findOneByNameAndType(text, searchableRoomTypeIds, roomOptions, includeFederatedRooms);
 		if (exactRoom) {
 			roomIds.push(exactRoom.rid);
 		}
 
 		return this.fetchRooms(
 			userId,
-			await RoomsRaw.findByNameAndTypesNotInIds(regex, searchableRoomTypeIds, roomIds, roomOptions, includeFederatedRooms).toArray(),
+			await Rooms.findByNameOrFNameAndTypesNotInIds(regex, searchableRoomTypeIds, roomIds, roomOptions, includeFederatedRooms).toArray(),
 		);
 	}
 
@@ -133,8 +135,31 @@ export class Spotlight {
 		}
 	}
 
-	async _performExtraUserSearches(/* userId, searchParams */) {
-		// Overwrite this method to include extra searches
+	mapTeams(teams) {
+		return teams.map((t) => {
+			t.isTeam = true;
+			t.username = t.name;
+			t.status = 'online';
+			return t;
+		});
+	}
+
+	async _searchTeams(userId, { text, options, users, mentions }) {
+		if (!mentions || settings.get('Troubleshoot_Disable_Teams_Mention')) {
+			return users;
+		}
+
+		options.limit -= users.length;
+
+		if (options.limit <= 0) {
+			return users;
+		}
+
+		const teamOptions = { ...options, projection: { name: 1, type: 1 } };
+		const teams = await Team.search(userId, text, teamOptions);
+		users.push(...this.mapTeams(teams));
+
+		return users;
 	}
 
 	async searchUsers({ userId, rid, text, usernames, mentions }) {
@@ -156,7 +181,7 @@ export class Spotlight {
 			readPreference: readSecondaryPreferred(Users.col.s.db),
 		};
 
-		const room = Rooms.findOneById(rid, { fields: { ...roomAccessAttributes, _id: 1, t: 1, uids: 1 } });
+		const room = await Rooms.findOneById(rid, { projection: { ...roomAccessAttributes, _id: 1, t: 1, uids: 1 } });
 
 		if (rid && !room) {
 			return users;
@@ -212,7 +237,7 @@ export class Spotlight {
 			}
 		}
 
-		if (users.length === 0 && canListOutsiders) {
+		if (users.length === 0 && canListOutsiders && text) {
 			const exactMatch = await Users.findOneByUsernameIgnoringCase(text, {
 				projection: options.projection,
 				readPreference: options.readPreference,
@@ -241,11 +266,11 @@ export class Spotlight {
 			if (await this._searchOutsiderUsers(searchParams)) {
 				return users;
 			}
-		} else if (await this._searchConnectedUsers(userId, searchParams)) {
+		} else if (await this._searchConnectedUsers(userId, searchParams, 'd')) {
 			return users;
 		}
 
-		if (await this._performExtraUserSearches(userId, searchParams)) {
+		if (await this._searchTeams(userId, searchParams)) {
 			return users;
 		}
 

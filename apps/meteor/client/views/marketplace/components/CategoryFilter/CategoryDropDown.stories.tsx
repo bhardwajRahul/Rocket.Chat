@@ -1,14 +1,14 @@
-import { ButtonGroup } from '@rocket.chat/fuselage';
-import type { Story } from '@storybook/react';
-import React, { useState } from 'react';
+import { Box, ButtonGroup } from '@rocket.chat/fuselage';
+import type { StoryFn } from '@storybook/react';
+import { useState } from 'react';
 
-import type { CategoryDropDownListProps } from '../../definitions/CategoryDropdownDefinitions';
-import { useCategories } from '../../hooks/useCategories';
-import { useCategoryToggle } from '../../hooks/useCategoryToggle';
 import CategoryDropDown from './CategoryDropDown';
 import CategoryDropDownAnchor from './CategoryDropDownAnchor';
 import CategoryDropDownList from './CategoryDropDownList';
 import TagList from './TagList';
+import type { CategoryDropDownListProps } from '../../definitions/CategoryDropdownDefinitions';
+import { useCategories } from '../../hooks/useCategories';
+import { useCategoryToggle } from '../../hooks/useCategoryToggle';
 
 export default {
 	title: 'Admin/Apps/CategoryDropDown',
@@ -55,10 +55,10 @@ const testCategories: CategoryDropDownListProps['categories'] = [
 	},
 ];
 
-export const Anchor: Story = () => (
+export const Anchor: StoryFn = () => (
 	<CategoryDropDownAnchor selectedCategoriesCount={testCategories.flatMap((group) => group.items).length} />
 );
-export const List: Story = () => {
+export const List: StoryFn = () => {
 	const [data, setData] = useState(() => testCategories);
 
 	const onSelected = useCategoryToggle(setData);
@@ -66,19 +66,19 @@ export const List: Story = () => {
 	return <CategoryDropDownList categories={data} onSelected={onSelected} />;
 };
 
-export const Default: Story = () => {
+export const Default: StoryFn = () => {
 	const [, selectedCategories, categoryTagList] = useCategories();
 
-	const [data, setData] = useState(() => testCategories);
+	const [data, setData] = useState(testCategories);
 
 	const onSelected = useCategoryToggle(setData);
 
 	return (
-		<>
+		<Box w='x144'>
 			<ButtonGroup>
 				<CategoryDropDown categories={data} selectedCategories={selectedCategories} onSelected={onSelected} />
 			</ButtonGroup>
 			<TagList categories={categoryTagList} onClick={onSelected} />
-		</>
+		</Box>
 	);
 };

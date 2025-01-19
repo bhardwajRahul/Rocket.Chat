@@ -1,7 +1,9 @@
-import { useTranslation } from '@rocket.chat/ui-contexts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
-import { Apps } from '../../../../ee/client/apps/orchestrator';
+import { useCategoryFlatList } from './useCategoryFlatList';
+import { useCategoryToggle } from './useCategoryToggle';
+import { AppClientOrchestratorInstance } from '../../../apps/orchestrator';
 import type {
 	CategoryDropDownGroups,
 	CategoryDropdownItem,
@@ -9,23 +11,23 @@ import type {
 	CategoryOnSelected,
 	selectedCategoriesList,
 } from '../definitions/CategoryDropdownDefinitions';
-import { handleAPIError } from '../helpers';
-import { useCategoryFlatList } from './useCategoryFlatList';
-import { useCategoryToggle } from './useCategoryToggle';
+import { handleAPIError } from '../helpers/handleAPIError';
 
 export const useCategories = (): [CategoryDropDownGroups, selectedCategoriesList, selectedCategoriesList, CategoryOnSelected] => {
-	const t = useTranslation();
+	const { t } = useTranslation();
 	const [categories, setCategories] = useState<CategoryDropDownListProps['categories']>([]);
 
 	const fetchCategories = useCallback(async (): Promise<void> => {
 		try {
-			const fetchedCategories = await Apps.getCategories();
+			const fetchedCategories = await AppClientOrchestratorInstance.getCategories();
 
-			const mappedCategories = fetchedCategories.map((currentCategory) => ({
-				id: currentCategory.id,
-				label: currentCategory.title,
-				checked: false,
-			}));
+			const mappedCategories = fetchedCategories
+				.filter((currentCategory) => !currentCategory.hidden)
+				.map((currentCategory) => ({
+					id: currentCategory.id,
+					label: currentCategory.title,
+					checked: false,
+				}));
 
 			setCategories([
 				{

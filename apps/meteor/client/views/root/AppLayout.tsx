@@ -1,36 +1,40 @@
-import type { ReactElement } from 'react';
-import React, { useEffect, Suspense } from 'react';
+import { useEffect, Suspense } from 'react';
 import { useSyncExternalStore } from 'use-sync-external-store/shim';
 
-import { appLayout } from '../../lib/appLayout';
-import { blazePortals, useBlazePortals } from '../../lib/portals/blazePortals';
+import DocumentTitleWrapper from './DocumentTitleWrapper';
 import PageLoading from './PageLoading';
 import { useEscapeKeyStroke } from './hooks/useEscapeKeyStroke';
 import { useGoogleTagManager } from './hooks/useGoogleTagManager';
 import { useMessageLinkClicks } from './hooks/useMessageLinkClicks';
+import { useAnalytics } from '../../../app/analytics/client/loadScript';
+import { useAnalyticsEventTracking } from '../../hooks/useAnalyticsEventTracking';
+import { useLoadRoomForAllowedAnonymousRead } from '../../hooks/useLoadRoomForAllowedAnonymousRead';
+import { useNotifyUser } from '../../hooks/useNotifyUser';
+import { appLayout } from '../../lib/appLayout';
 
-const AppLayout = (): ReactElement => {
+const AppLayout = () => {
 	useEffect(() => {
 		document.body.classList.add('color-primary-font-color', 'rcx-content--main');
 
 		return () => {
-			document.body.classList.add('color-primary-font-color', 'rcx-content--main');
+			document.body.classList.remove('color-primary-font-color', 'rcx-content--main');
 		};
 	}, []);
 
 	useMessageLinkClicks();
 	useGoogleTagManager();
+	useAnalytics();
 	useEscapeKeyStroke();
+	useAnalyticsEventTracking();
+	useLoadRoomForAllowedAnonymousRead();
+	useNotifyUser();
 
 	const layout = useSyncExternalStore(appLayout.subscribe, appLayout.getSnapshot);
 
-	const [portals] = useBlazePortals(blazePortals);
-
 	return (
-		<>
-			<Suspense fallback={<PageLoading />}>{layout}</Suspense>
-			{portals}
-		</>
+		<Suspense fallback={<PageLoading />}>
+			<DocumentTitleWrapper>{layout}</DocumentTitleWrapper>
+		</Suspense>
 	);
 };
 

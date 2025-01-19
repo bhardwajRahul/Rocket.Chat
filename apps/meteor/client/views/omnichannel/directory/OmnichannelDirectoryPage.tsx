@@ -1,65 +1,70 @@
 import { Tabs } from '@rocket.chat/fuselage';
-import { useCurrentRoute, useRoute, useRouteParameter, usePermission, useTranslation } from '@rocket.chat/ui-contexts';
-import type { ReactElement } from 'react';
-import React, { useEffect, useCallback } from 'react';
+import { useRouteParameter, useRouter } from '@rocket.chat/ui-contexts';
+import { useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 
-import Page from '../../../components/Page';
-import { queryClient } from '../../../lib/queryClient';
-import NotAuthorizedPage from '../../notAuthorized/NotAuthorizedPage';
-import ContextualBar from './ContextualBar';
+import ContextualBarRouter from './ContextualBarRouter';
 import CallTab from './calls/CallTab';
-import ChatTab from './chats/ChatTab';
+import ChatsTab from './chats/ChatsTab';
 import ContactTab from './contacts/ContactTab';
+import ChatsProvider from './providers/ChatsProvider';
+import { ContextualbarDialog } from '../../../components/Contextualbar';
+import { Page, PageHeader, PageContent } from '../../../components/Page';
 
-const DEFAULT_TAB = 'contacts';
+const DEFAULT_TAB = 'chats';
 
-const OmnichannelDirectoryPage = (): ReactElement => {
-	const [routeName] = useCurrentRoute();
-	const tab = useRouteParameter('page');
-	const directoryRoute = useRoute('omnichannel-directory');
-	const canViewDirectory = usePermission('view-omnichannel-contact-center');
+const OmnichannelDirectoryPage = () => {
+	const { t } = useTranslation();
+	const router = useRouter();
+	const tab = useRouteParameter('tab');
+	const context = useRouteParameter('context');
 
-	useEffect(() => {
-		if (routeName !== 'omnichannel-directory') {
-			return;
-		}
+	useEffect(
+		() =>
+			router.subscribeToRouteChange(() => {
+				if (router.getRouteName() !== 'omnichannel-directory' || !!router.getRouteParameters().tab) {
+					return;
+				}
 
-		if (!tab) {
-			return directoryRoute.replace({ page: DEFAULT_TAB });
-		}
-	}, [routeName, directoryRoute, tab]);
+				router.navigate({
+					name: 'omnichannel-directory',
+					params: { tab: DEFAULT_TAB },
+				});
+			}),
+		[router],
+	);
 
-	const handleTabClick = useCallback((tab) => (): void => directoryRoute.push({ tab }), [directoryRoute]);
-
-	const chatReload = () => queryClient.invalidateQueries({ queryKey: ['current-chats'] });
-
-	const t = useTranslation();
-
-	if (!canViewDirectory) {
-		return <NotAuthorizedPage />;
-	}
+	const handleTabClick = useCallback((tab: string) => router.navigate({ name: 'omnichannel-directory', params: { tab } }), [router]);
 
 	return (
-		<Page flexDirection='row'>
-			<Page>
-				<Page.Header title={t('Omnichannel_Contact_Center')} />
-				<Tabs flexShrink={0}>
-					<Tabs.Item selected={tab === 'contacts'} onClick={handleTabClick('contacts')}>
-						{t('Contacts')}
-					</Tabs.Item>
-					<Tabs.Item selected={tab === 'chats'} onClick={handleTabClick('chats')}>
-						{t('Chats' as 'color')}
-					</Tabs.Item>
-					<Tabs.Item selected={tab === 'calls'} onClick={handleTabClick('calls')}>
-						{t('Calls' as 'color')}
-					</Tabs.Item>
-				</Tabs>
-				<Page.Content>
-					{(tab === 'contacts' && <ContactTab />) || (tab === 'chats' && <ChatTab />) || (tab === 'calls' && <CallTab />)}
-				</Page.Content>
+		<ChatsProvider>
+			<Page flexDirection='row'>
+				<Page>
+					<PageHeader title={t('Omnichannel_Contact_Center')} />
+					<Tabs flexShrink={0}>
+						<Tabs.Item selected={tab === 'chats'} onClick={() => handleTabClick('chats')}>
+							{t('Chats')}
+						</Tabs.Item>
+						<Tabs.Item selected={tab === 'contacts'} onClick={() => handleTabClick('contacts')}>
+							{t('Contacts')}
+						</Tabs.Item>
+						<Tabs.Item selected={tab === 'calls'} onClick={() => handleTabClick('calls')}>
+							{t('Calls')}
+						</Tabs.Item>
+					</Tabs>
+					<PageContent>
+						{tab === 'chats' && <ChatsTab />}
+						{tab === 'contacts' && <ContactTab />}
+						{tab === 'calls' && <CallTab />}
+					</PageContent>
+				</Page>
+				{context && (
+					<ContextualbarDialog>
+						<ContextualBarRouter />
+					</ContextualbarDialog>
+				)}
 			</Page>
-			<ContextualBar chatReload={chatReload} />
-		</Page>
+		</ChatsProvider>
 	);
 };
 

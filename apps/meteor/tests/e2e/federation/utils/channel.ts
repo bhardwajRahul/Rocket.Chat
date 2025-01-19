@@ -1,9 +1,9 @@
-import faker from '@faker-js/faker';
+import { faker } from '@faker-js/faker';
 import type { Page } from '@playwright/test';
 
-import type { FederationChannel } from '../page-objects/channel';
 import { doLogin } from './auth';
 import type { API } from './test';
+import type { FederationChannel } from '../page-objects/channel';
 
 const doLoginAndGoToHome = async (
 	page: Page,
@@ -38,7 +38,7 @@ export const createChannelAndInviteRemoteUserToCreateLocalUser = async ({
 	};
 	closePageAfterCreation?: boolean;
 }): Promise<string> => {
-	const channelName = faker.datatype.uuid();
+	const channelName = faker.string.uuid();
 
 	await doLoginAndGoToHome(page, server);
 
@@ -66,7 +66,7 @@ export const createGroupAndInviteRemoteUserToCreateLocalUser = async ({
 		matrixServerName: string;
 	};
 }): Promise<string> => {
-	const groupName = faker.datatype.uuid();
+	const groupName = faker.string.uuid();
 
 	await doLoginAndGoToHome(page, server);
 

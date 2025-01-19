@@ -1,26 +1,25 @@
-import { Meteor } from 'meteor/meteor';
+import type { IMethodConnection, IUser, IRoom } from '@rocket.chat/core-typings';
+import { Logger } from '@rocket.chat/logger';
+import { Users } from '@rocket.chat/models';
 import { Random } from '@rocket.chat/random';
-import { DDPCommon } from 'meteor/ddp-common';
-import { DDP } from 'meteor/ddp';
+import type { JoinPathPattern, Method } from '@rocket.chat/rest-typings';
+import { tracerSpan } from '@rocket.chat/tracing';
 import { Accounts } from 'meteor/accounts-base';
-import type { Request, Response } from 'meteor/rocketchat:restivus';
-import { Restivus } from 'meteor/rocketchat:restivus';
-import _ from 'underscore';
+import { DDP } from 'meteor/ddp';
+import { DDPCommon } from 'meteor/ddp-common';
+import { Meteor } from 'meteor/meteor';
 import type { RateLimiterOptionsToCheck } from 'meteor/rate-limit';
 import { RateLimiter } from 'meteor/rate-limit';
-import type { IMethodConnection, IUser, IRoom } from '@rocket.chat/core-typings';
-import type { JoinPathPattern, Method } from '@rocket.chat/rest-typings';
+import type { Request, Response } from 'meteor/rocketchat:restivus';
+import { Restivus } from 'meteor/rocketchat:restivus';
+import semver from 'semver';
+import _ from 'underscore';
 
-import { getRestPayload } from '../../../server/lib/logger/logPayloads';
-import { settings } from '../../settings/server';
-import { metrics } from '../../metrics/server';
-import { getDefaultUserFields } from '../../utils/server/functions/getDefaultUserFields';
-import { checkCodeForUser } from '../../2fa/server/code';
 import type { PermissionsPayload } from './api.helpers';
-import { checkPermissionsForInvocation, checkPermissions } from './api.helpers';
-import { isObject } from '../../../lib/utils/isObject';
+import { checkPermissionsForInvocation, checkPermissions, parseDeprecation } from './api.helpers';
 import type {
 	FailureResult,
+	ForbiddenResult,
 	InternalError,
 	NotFoundResult,
 	Operations,
@@ -29,19 +28,34 @@ import type {
 	SuccessResult,
 	UnauthorizedResult,
 } from './definition';
-import { parseJsonQuery } from './helpers/parseJsonQuery';
-import { Logger } from '../../logger/server';
 import { getUserInfo } from './helpers/getUserInfo';
+import { parseJsonQuery } from './helpers/parseJsonQuery';
+import { isObject } from '../../../lib/utils/isObject';
+import { getNestedProp } from '../../../server/lib/getNestedProp';
+import { getRestPayload } from '../../../server/lib/logger/logPayloads';
+import { checkCodeForUser } from '../../2fa/server/code';
 import { hasPermissionAsync } from '../../authorization/server/functions/hasPermission';
+import { notifyOnUserChangeAsync } from '../../lib/server/lib/notifyListener';
+import { metrics } from '../../metrics/server';
+import { settings } from '../../settings/server';
+import { Info } from '../../utils/rocketchat.info';
+import { getDefaultUserFields } from '../../utils/server/functions/getDefaultUserFields';
 
 const logger = new Logger('API');
 
+// We have some breaking changes planned to the API.
+// To avoid conflicts or missing something during the period we are adopting a 'feature flag approach'
+// TODO: MAJOR check if this is still needed
+const applyBreakingChanges = semver.gte(Info.version, '8.0.0');
+
 interface IAPIProperties {
-	apiPath: string;
 	useDefaultAuth: boolean;
 	prettyJson: boolean;
-	defaultOptionsEndpoint: () => Promise<void>;
-	auth: { token: string; user: () => { userId: string; token: string } };
+	auth: { token: string; user: () => Promise<{ userId: string; token: string }> };
+	defaultOptionsEndpoint?: () => Promise<void>;
+	version?: string;
+	enableCors?: boolean;
+	apiPath?: string;
 }
 
 interface IAPIDefaultFieldsToExclude {
@@ -58,6 +72,7 @@ interface IAPIDefaultFieldsToExclude {
 	statusDefault: number;
 	_updatedAt: number;
 	settings: number;
+	inviteToken: number;
 }
 
 type RateLimiterOptions = {
@@ -104,10 +119,26 @@ const getRequestIP = (req: Request): string | null => {
 	return forwardedFor[forwardedFor.length - httpForwardedCount];
 };
 
+const generateConnection = (
+	ipAddress: string,
+	httpHeaders: Record<string, any>,
+): {
+	id: string;
+	close: () => void;
+	clientAddress: string;
+	httpHeaders: Record<string, any>;
+} => ({
+	id: Random.id(),
+	// eslint-disable-next-line @typescript-eslint/no-empty-function
+	close() {},
+	httpHeaders,
+	clientAddress: ipAddress,
+});
+
 let prometheusAPIUserAgent = false;
 
-export class APIClass<TBasePath extends string = '/'> extends Restivus {
-	protected apiPath: string;
+export class APIClass<TBasePath extends string = ''> extends Restivus {
+	protected apiPath?: string;
 
 	public authMethods: ((...args: any[]) => any)[];
 
@@ -128,6 +159,7 @@ export class APIClass<TBasePath extends string = '/'> extends Restivus {
 
 	public limitedUserFieldsToExcludeIfIsPrivilegedUser: {
 		services: number;
+		inviteToken: number;
 	};
 
 	constructor(properties: IAPIProperties) {
@@ -155,18 +187,23 @@ export class APIClass<TBasePath extends string = '/'> extends Restivus {
 			statusDefault: 0,
 			_updatedAt: 0,
 			settings: 0,
+			inviteToken: 0,
 		};
 		this.limitedUserFieldsToExclude = this.defaultLimitedUserFieldsToExclude;
 		this.limitedUserFieldsToExcludeIfIsPrivilegedUser = {
 			services: 0,
+			inviteToken: 0,
 		};
 	}
 
 	public setLimitedCustomFields(customFields: string[]): void {
-		const nonPublicFieds = customFields.reduce((acc, customField) => {
-			acc[`customFields.${customField}`] = 0;
-			return acc;
-		}, {} as Record<string, any>);
+		const nonPublicFieds = customFields.reduce(
+			(acc, customField) => {
+				acc[`customFields.${customField}`] = 0;
+				return acc;
+			},
+			{} as Record<string, any>,
+		);
 		this.limitedUserFieldsToExclude = {
 			...this.defaultLimitedUserFieldsToExclude,
 			...nonPublicFieds,
@@ -174,10 +211,7 @@ export class APIClass<TBasePath extends string = '/'> extends Restivus {
 	}
 
 	async parseJsonQuery(this: PartialThis) {
-		// eslint-disable-next-line @typescript-eslint/no-this-alias
-		const self = this;
-
-		return parseJsonQuery(this.request.route, self.userId, self.queryParams, self.logger, self.queryFields, self.queryOperations);
+		return parseJsonQuery(this);
 	}
 
 	public addAuthMethod(func: (this: PartialThis, ...args: any[]) => any): void {
@@ -194,6 +228,10 @@ export class APIClass<TBasePath extends string = '/'> extends Restivus {
 			Boolean(defaultRateLimiterOptions.numRequestsAllowed && defaultRateLimiterOptions.intervalTimeInMS)
 		);
 	}
+
+	public success(): SuccessResult<void>;
+
+	public success<T>(result: T): SuccessResult<T>;
 
 	public success<T>(result: T = {} as T): SuccessResult<T> {
 		if (isObject(result)) {
@@ -268,17 +306,30 @@ export class APIClass<TBasePath extends string = '/'> extends Restivus {
 			statusCode: 500,
 			body: {
 				success: false,
-				error: msg || 'Internal error occured',
+				error: msg || 'Internal server error',
 			},
 		};
 	}
 
 	public unauthorized<T>(msg?: T): UnauthorizedResult<T> {
 		return {
-			statusCode: 403,
+			statusCode: 401,
 			body: {
 				success: false,
 				error: msg || 'unauthorized',
+			},
+		};
+	}
+
+	public forbidden<T>(msg?: T): ForbiddenResult<T> {
+		return {
+			statusCode: 403,
+			body: {
+				success: false,
+				// TODO: MAJOR remove 'unauthorized' in favor of 'forbidden'
+				// because of reasons beyond my control we were used to send `unauthorized` to 403 cases, to avoid a breaking change we just adapted here
+				// but thanks to the semver check tests should break as soon we bump to a new version
+				error: msg || (applyBreakingChanges ? 'forbidden' : 'unauthorized'),
 			},
 		};
 	}
@@ -317,7 +368,7 @@ export class APIClass<TBasePath extends string = '/'> extends Restivus {
 		}
 
 		rateLimiterDictionary[objectForRateLimitMatch.route].rateLimiter.increment(objectForRateLimitMatch);
-		const attemptResult = rateLimiterDictionary[objectForRateLimitMatch.route].rateLimiter.check(objectForRateLimitMatch);
+		const attemptResult = await rateLimiterDictionary[objectForRateLimitMatch.route].rateLimiter.check(objectForRateLimitMatch);
 		const timeToResetAttempsInSeconds = Math.ceil(attemptResult.timeToReset / 1000);
 		response.setHeader('X-RateLimit-Limit', rateLimiterDictionary[objectForRateLimitMatch.route].options.numRequestsAllowed);
 		response.setHeader('X-RateLimit-Remaining', attemptResult.numInvocationsLeft);
@@ -533,13 +584,13 @@ export class APIClass<TBasePath extends string = '/'> extends Restivus {
 						if (!options.authRequired && options.authOrAnonRequired) {
 							const { 'x-user-id': userId, 'x-auth-token': userToken } = this.request.headers;
 							if (userId && userToken) {
-								this.user = Meteor.users.findOne(
+								this.user = await Users.findOne(
 									{
 										'services.resume.loginTokens.hashedToken': Accounts._hashLoginToken(userToken),
 										'_id': userId,
 									},
 									{
-										fields: getDefaultUserFields(),
+										projection: getDefaultUserFields(),
 									},
 								);
 
@@ -547,13 +598,16 @@ export class APIClass<TBasePath extends string = '/'> extends Restivus {
 							}
 
 							if (!this.user && !settings.get('Accounts_AllowAnonymousRead')) {
-								return {
-									statusCode: 401,
-									body: {
+								const result = api.unauthorized('You must be logged in to do this.');
+								// compatibility with the old API
+								// TODO: MAJOR
+								if (!applyBreakingChanges) {
+									Object.assign(result.body, {
 										status: 'error',
 										message: 'You must be logged in to do this.',
-									},
-								};
+									});
+								}
+								return result;
 							}
 						}
 
@@ -564,16 +618,13 @@ export class APIClass<TBasePath extends string = '/'> extends Restivus {
 
 						let result;
 
-						const connection = {
-							id: Random.id(),
-							// eslint-disable-next-line @typescript-eslint/no-empty-function
-							close() {},
-							token: this.token,
-							httpHeaders: this.request.headers,
-							clientAddress: this.requestIp,
-						};
+						const connection = { ...generateConnection(this.requestIp, this.request.headers), token: this.token };
 
 						try {
+							if (options.deprecation) {
+								parseDeprecation(this, options.deprecation);
+							}
+
 							await api.enforceRateLimit(objectForRateLimitMatch, this.request, this.response, this.userId);
 
 							if (_options.validateParams) {
@@ -585,18 +636,29 @@ export class APIClass<TBasePath extends string = '/'> extends Restivus {
 									throw new Meteor.Error('invalid-params', validatorFunc.errors?.map((error: any) => error.message).join('\n '));
 								}
 							}
-							if (
-								shouldVerifyPermissions &&
-								(!this.userId ||
+							if (shouldVerifyPermissions) {
+								if (!this.userId) {
+									if (applyBreakingChanges) {
+										throw new Meteor.Error('error-unauthorized', 'You must be logged in to do this');
+									}
+									throw new Meteor.Error('error-unauthorized', 'User does not have the permissions required for this action');
+								}
+								if (
 									!(await checkPermissionsForInvocation(
 										this.userId,
 										_options.permissionsRequired as PermissionsPayload,
 										this.request.method,
-									)))
-							) {
-								throw new Meteor.Error('error-unauthorized', 'User does not have the permissions required for this action', {
-									permissions: _options.permissionsRequired,
-								});
+									))
+								) {
+									if (applyBreakingChanges) {
+										throw new Meteor.Error('error-forbidden', 'User does not have the permissions required for this action', {
+											permissions: _options.permissionsRequired,
+										});
+									}
+									throw new Meteor.Error('error-unauthorized', 'User does not have the permissions required for this action', {
+										permissions: _options.permissionsRequired,
+									});
+								}
 							}
 
 							const invocation = new DDPCommon.MethodInvocation({
@@ -622,26 +684,55 @@ export class APIClass<TBasePath extends string = '/'> extends Restivus {
 							this.queryFields = options.queryFields;
 							this.parseJsonQuery = api.parseJsonQuery.bind(this as PartialThis);
 
-							result =
-								(await DDP._CurrentInvocation.withValue(invocation as any, async () => originalAction.apply(this))) || API.v1.success();
+							result = await tracerSpan(
+								`${this.request.method} ${this.request.url}`,
+								{
+									attributes: {
+										url: this.request.url,
+										route: this.request.route,
+										method: this.request.method,
+										userId: this.userId,
+									},
+								},
+								async (span) => {
+									if (span) {
+										this.response.setHeader('X-Trace-Id', span.spanContext().traceId);
+									}
+
+									const result =
+										(await DDP._CurrentInvocation.withValue(invocation as any, async () => originalAction.apply(this))) || API.v1.success();
+
+									span?.setAttribute('status', result.statusCode);
+
+									return result;
+								},
+							);
 
 							log.http({
 								status: result.statusCode,
 								responseTime: Date.now() - startTime,
 							});
 						} catch (e: any) {
-							const apiMethod: string =
-								{
-									'error-too-many-requests': 'tooManyRequests',
-									'error-unauthorized': 'unauthorized',
-								}[e.error as string] || 'failure';
-
-							result = (API.v1 as Record<string, any>)[apiMethod](
-								typeof e === 'string' ? e : e.message,
-								e.error,
-								process.env.TEST_MODE ? e.stack : undefined,
-								e,
-							);
+							result = ((e: any) => {
+								switch (e.error) {
+									case 'error-too-many-requests':
+										return API.v1.tooManyRequests(typeof e === 'string' ? e : e.message);
+									case 'unauthorized':
+									case 'error-unauthorized':
+										if (applyBreakingChanges) {
+											return API.v1.unauthorized(typeof e === 'string' ? e : e.message);
+										}
+										return API.v1.forbidden(typeof e === 'string' ? e : e.message);
+									case 'forbidden':
+									case 'error-forbidden':
+										if (applyBreakingChanges) {
+											return API.v1.forbidden(typeof e === 'string' ? e : e.message);
+										}
+										return API.v1.failure(typeof e === 'string' ? e : e.message, e.error, process.env.TEST_MODE ? e.stack : undefined, e);
+									default:
+										return API.v1.failure(typeof e === 'string' ? e : e.message, e.error, process.env.TEST_MODE ? e.stack : undefined, e);
+								}
+							})(e);
 
 							log.http({
 								err: e,
@@ -743,8 +834,8 @@ export class APIClass<TBasePath extends string = '/'> extends Restivus {
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const self = this;
 
-		(this as APIClass<'/v1'>).addRoute<'/v1/login', { authRequired: false }>(
-			'login' as any,
+		(this as APIClass<'/v1'>).addRoute(
+			'login',
 			{ authRequired: false },
 			{
 				async post() {
@@ -752,71 +843,63 @@ export class APIClass<TBasePath extends string = '/'> extends Restivus {
 					const args = loginCompatibility(this.bodyParams, request);
 
 					const invocation = new DDPCommon.MethodInvocation({
-						connection: {
-							// eslint-disable-next-line @typescript-eslint/no-empty-function
-							close() {},
-							httpHeaders: this.request.headers,
-							clientAddress: getRequestIP(request) || '',
-						},
+						connection: generateConnection(getRequestIP(request) || '', this.request.headers),
 					});
 
-					let auth;
 					try {
-						auth = await DDP._CurrentInvocation.withValue(invocation as any, async () => Meteor.callAsync('login', args));
-					} catch (error: any) {
-						let e = error;
-						if (error.reason === 'User not found') {
-							e = {
-								error: 'Unauthorized',
-								reason: 'Unauthorized',
-							};
+						const auth = await DDP._CurrentInvocation.withValue(invocation as any, async () => Meteor.callAsync('login', args));
+						this.user = await Users.findOne(
+							{
+								_id: auth.id,
+							},
+							{
+								projection: getDefaultUserFields(),
+							},
+						);
+
+						if (!this.user) {
+							return self.unauthorized();
 						}
 
-						return {
-							statusCode: 401,
-							body: {
-								status: 'error',
-								error: e.error,
-								details: e.details,
-								message: e.reason || e.message,
+						this.userId = this.user._id;
+
+						const extraData = self._config.onLoggedIn?.call(this);
+
+						return self.success({
+							status: 'success',
+							data: {
+								userId: this.userId,
+								authToken: auth.token,
+								me: await getUserInfo(this.user || ({} as IUser)),
+								...(extraData && { extra: extraData }),
 							},
-						} as unknown as SuccessResult<Record<string, any>>;
-					}
-
-					this.user = Meteor.users.findOne(
-						{
-							_id: auth.id,
-						},
-						{
-							fields: getDefaultUserFields(),
-						},
-					) as any;
-
-					this.userId = (this.user as unknown as IUser)?._id as any;
-
-					const response = {
-						status: 'success',
-						data: {
-							userId: this.userId,
-							authToken: auth.token,
-							me: await getUserInfo(this.user || ({} as IUser)),
-						},
-					};
-
-					const extraData = self._config.onLoggedIn?.call(this);
-
-					if (extraData != null) {
-						_.extend(response.data, {
-							extra: extraData,
 						});
-					}
+					} catch (error) {
+						if (!(error instanceof Meteor.Error)) {
+							return self.internalError();
+						}
 
-					return response as unknown as SuccessResult<Record<string, any>>;
+						const result = self.unauthorized();
+
+						if (!applyBreakingChanges) {
+							Object.assign(result.body, {
+								status: 'error',
+								error: error.error,
+								details: error.details,
+								message: error.reason || error.message,
+								...(error.reason === 'User not found' && {
+									error: 'Unauthorized',
+									message: 'Unauthorized',
+								}),
+							});
+						}
+						return result;
+					}
 				},
 			},
 		);
 
-		const logout = function (this: Restivus): { status: string; data: { message: string } } {
+		const logout = async function (this: Restivus): Promise<{ status: string; data: { message: string } }> {
 			// Remove the given auth token from the user's account
 			const authToken = this.request.headers['x-auth-token'];
 			const hashedToken = Accounts._hashLoginToken(authToken);
@@ -829,8 +912,24 @@ export class APIClass<TBasePath extends string = '/'> extends Restivus {
 			const tokenRemovalQuery: Record<string, any> = {};
 			tokenRemovalQuery[tokenPath] = tokenToRemove;
 
-			Meteor.users.update(this.user._id, {
-				$pull: tokenRemovalQuery,
+			await Users.updateOne(
+				{ _id: this.user._id },
+				{
+					$pull: tokenRemovalQuery,
+				},
+			);
+
+			// TODO this can be optmized so places that care about loginTokens being removed are invoked directly
+			// instead of having to listen to every watch.users event
+			void notifyOnUserChangeAsync(async () => {
+				const userTokens = await Users.findOneById(this.user._id, { projection: { [tokenPath]: 1 } });
+				if (!userTokens) {
+					return;
+				}
+
+				const diff = { [tokenPath]: getNestedProp(userTokens, tokenPath) };
+
+				return { clientAction: 'updated', id: this.user._id, diff };
 			});
 
 			const response = {
@@ -874,20 +973,21 @@ export class APIClass<TBasePath extends string = '/'> extends Restivus {
 	}
 }
 
-const getUserAuth = function _getUserAuth(...args: any[]): { token: string; user: (this: Restivus) => { userId: string; token: string } } {
+const getUserAuth = function _getUserAuth(...args: any[]): {
+	token: string;
+	user: (this: Restivus) => Promise<{ userId: string; token: string }>;
+} {
 	const invalidResults = [undefined, null, false];
 	return {
 		token: 'services.resume.loginTokens.hashedToken',
-		user() {
+		async user() {
 			if (this.bodyParams?.payload) {
 				this.bodyParams = JSON.parse(this.bodyParams.payload);
 			}
 
-			for (let i = 0; i < (API.v1?.authMethods || []).length; i++) {
-				const method = API.v1?.authMethods?.[i];
-
+			for await (const method of API.v1?.authMethods || []) {
 				if (typeof method === 'function') {
-					const result = method.apply(this, args);
+					const result = await method.apply(this, args);
 					if (!invalidResults.includes(result)) {
 						return result;
 					}
@@ -909,7 +1009,7 @@ const getUserAuth = function _getUserAuth(...args: any[]): { token: string; user
 	};
 };
 
-const defaultOptionsEndpoint = function _defaultOptionsEndpoint(this: Restivus) {
+const defaultOptionsEndpoint = async function _defaultOptionsEndpoint(this: Restivus): Promise<void> {
 	// check if a pre-flight request
 	if (!this.request.headers['access-control-request-method'] && !this.request.headers.origin) {
 		this.done();
@@ -976,8 +1076,8 @@ const createApi = function _createApi(options: { version?: string } = {}): APICl
 export const API: {
 	v1: APIClass<'/v1'>;
 	default: APIClass;
-	getUserAuth?: () => { token: string; user: (this: Restivus) => { userId: string; token: string } };
-	ApiClass?: typeof APIClass;
+	getUserAuth: () => { token: string; user: (this: Restivus) => Promise<{ userId: string; token: string }> };
+	ApiClass: typeof APIClass;
 	channels?: {
 		create: {
 			validate: (params: {
@@ -986,6 +1086,7 @@ export const API: {
 				members?: { key: string; value?: string[] };
 				customFields?: { key: string; value?: string };
 				teams?: { key: string; value?: string[] };
+				teamId?: { key: string; value?: string };
 			}) => Promise<void>;
 			execute: (
 				userId: string,

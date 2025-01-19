@@ -1,16 +1,15 @@
 import type { IMessage } from '@rocket.chat/core-typings';
-import type { IconProps } from '@rocket.chat/fuselage';
 import { Box, ButtonGroup } from '@rocket.chat/fuselage';
-import { useMutableCallback } from '@rocket.chat/fuselage-hooks';
+import { useEffectEvent } from '@rocket.chat/fuselage-hooks';
+import type { Keys as IconName } from '@rocket.chat/icons';
 import type { TranslationKey } from '@rocket.chat/ui-contexts';
 import type { ReactElement } from 'react';
-import React from 'react';
 
-import { actionLinks } from '../../../../app/action-links/client';
 import MessageAction from './actions/MessageAction';
+import { actionLinks } from '../../../lib/actionLinks';
 
 type MessageActionOptions = {
-	icon: IconProps['name'];
+	icon: IconName;
 	i18nLabel?: TranslationKey;
 	label?: string;
 	methodId: string;
@@ -24,7 +23,7 @@ type MessageActionsProps = {
 };
 
 const MessageActions = ({ message, actions }: MessageActionsProps): ReactElement => {
-	const runAction = useMutableCallback((action: string) => () => {
+	const runAction = useEffectEvent((action: string) => () => {
 		actionLinks.run(action, message);
 	});
 

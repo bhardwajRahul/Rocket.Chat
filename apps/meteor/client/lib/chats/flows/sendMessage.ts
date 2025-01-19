@@ -1,18 +1,16 @@
 import type { IMessage } from '@rocket.chat/core-typings';
 
-import { KonchatNotification } from '../../../../app/ui/client/lib/KonchatNotification';
-import { t } from '../../../../app/utils/client';
+import { sdk } from '../../../../app/utils/client/lib/SDKClient';
+import { t } from '../../../../app/utils/lib/i18n';
+import { onClientBeforeSendMessage } from '../../onClientBeforeSendMessage';
 import { dispatchToastMessage } from '../../toast';
-import { call } from '../../utils/call';
 import type { ChatAPI } from '../ChatAPI';
 import { processMessageEditing } from './processMessageEditing';
 import { processSetReaction } from './processSetReaction';
 import { processSlashCommand } from './processSlashCommand';
 import { processTooLongMessage } from './processTooLongMessage';
 
-const process = async (chat: ChatAPI, message: IMessage): Promise<void> => {
-	KonchatNotification.removeRoomNotification(message.rid);
-
+const process = async (chat: ChatAPI, message: IMessage, previewUrls?: string[], isSlashCommandAllowed?: boolean): Promise<void> => {
 	if (await processSetReaction(chat, message)) {
 		return;
 	}
@@ -21,18 +19,31 @@ const process = async (chat: ChatAPI, message: IMessage): Promise<void> => {
 		return;
 	}
 
-	if (await processMessageEditing(chat, message)) {
+	if (isSlashCommandAllowed && (await processSlashCommand(chat, message))) {
 		return;
 	}
 
-	if (await processSlashCommand(chat, message)) {
+	message = (await onClientBeforeSendMessage(message)) as IMessage;
+
+	// e2e should be a client property only
+	delete message.e2e;
+
+	if (await processMessageEditing(chat, message, previewUrls)) {
 		return;
 	}
 
-	await call('sendMessage', message);
+	await sdk.call('sendMessage', message, previewUrls);
 };
 
-export const sendMessage = async (chat: ChatAPI, { text, tshow }: { text: string; tshow?: boolean }): Promise<boolean> => {
+export const sendMessage = async (
+	chat: ChatAPI,
+	{
+		text,
+		tshow,
+		previewUrls,
+		isSlashCommandAllowed,
+	}: { text: string; tshow?: boolean; previewUrls?: string[]; isSlashCommandAllowed?: boolean },
+): Promise<boolean> => {
 	if (!(await chat.data.isSubscribedToRoom())) {
 		try {
 			await chat.data.joinRoom();
@@ -42,7 +53,7 @@ export const sendMessage = async (chat: ChatAPI, { text, tshow }: { text: string
 		}
 	}
 
-	await chat.data.markRoomAsRead();
+	chat.readStateManager.clearUnreadMark();
 
 	text = text.trim();
 
@@ -55,11 +66,26 @@ export const sendMessage = async (chat: ChatAPI, { text, tshow }: { text: string
 		const message = await chat.data.composeMessage(text, {
 			sendToChannel: tshow,
 			quotedMessages: chat.composer?.quotedMessages.get() ?? [],
-			originalMessage: chat.currentEditing ? await chat.data.findMessageByID(chat.currentEditing.mid) : undefined,
+			originalMessage: chat.currentEditing ? await chat.data.findMessageByID(chat.currentEditing.mid) : null,
 		});
 
+		if (chat.currentEditing) {
+			const originalMessage = await chat.data.findMessageByID(chat.currentEditing.mid);
+
+			if (
+				originalMessage?.t === 'e2e' &&
+				originalMessage.attachments &&
+				originalMessage.attachments.length > 0 &&
+				originalMessage.attachments[0].description !== undefined
+			) {
+				originalMessage.attachments[0].description = message.msg;
+				message.attachments = originalMessage.attachments;
+				message.msg = originalMessage.msg;
+			}
+		}
+
 		try {
-			await process(chat, message);
+			await process(chat, message, previewUrls, isSlashCommandAllowed);
 			chat.composer?.dismissAllQuotedMessages();
 		} catch (error) {
 			dispatchToastMessage({ type: 'error', message: error });
@@ -76,7 +102,7 @@ export const sendMessage = async (chat: ChatAPI, { text, tshow }: { text: string
 		}
 
 		try {
-			if (await chat.flows.processMessageEditing({ ...originalMessage, msg: '' })) {
+			if (await chat.flows.processMessageEditing({ ...originalMessage, msg: '' }, previewUrls)) {
 				chat.currentEditing.stop();
 				return false;
 			}

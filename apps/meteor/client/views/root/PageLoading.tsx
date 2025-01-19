@@ -1,13 +1,8 @@
-import type { FC } from 'react';
-import React from 'react';
+import LoadingIndicator from '../../components/LoadingIndicator';
 
-const PageLoading: FC = () => (
+const PageLoading = () => (
 	<div className='page-loading' role='alert' aria-busy='true' aria-live='polite' aria-label='loading'>
-		<div className='loading-animation'>
-			<div className='bounce bounce1'></div>
-			<div className='bounce bounce2'></div>
-			<div className='bounce bounce3'></div>
-		</div>
+		<LoadingIndicator />
 	</div>
 );
 

@@ -1,13 +1,13 @@
-import { Meteor } from 'meteor/meteor';
-import { DDPRateLimiter } from 'meteor/ddp-rate-limiter';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
 import type { ISupportedLanguage } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { DDPRateLimiter } from 'meteor/ddp-rate-limiter';
+import { Meteor } from 'meteor/meteor';
 
-import { hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
 import { TranslationProviderRegistry } from '..';
+import { hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
 import { settings } from '../../../settings/server';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		'autoTranslate.getSupportedLanguages'(targetLanguage: string): ISupportedLanguage[] | undefined;

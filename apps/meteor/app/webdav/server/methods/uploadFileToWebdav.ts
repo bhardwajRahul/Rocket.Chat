@@ -1,15 +1,16 @@
-import { Meteor } from 'meteor/meteor';
 import { MeteorError } from '@rocket.chat/core-services';
 import type { IWebdavAccount } from '@rocket.chat/core-typings';
-import type { ServerMethods, TranslationKey } from '@rocket.chat/ui-contexts';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Logger } from '@rocket.chat/logger';
+import type { TranslationKey } from '@rocket.chat/ui-contexts';
+import { Meteor } from 'meteor/meteor';
 
 import { settings } from '../../../settings/server';
-import { Logger } from '../../../logger/server';
 import { uploadFileToWebdav } from '../lib/uploadFileToWebdav';
 
 const logger = new Logger('WebDAV_Upload');
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		uploadFileToWebdav(

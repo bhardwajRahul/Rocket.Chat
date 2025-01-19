@@ -1,12 +1,15 @@
-import { States, StatesIcon, StatesTitle, Pagination } from '@rocket.chat/fuselage';
+import { Pagination } from '@rocket.chat/fuselage';
 import { useDebouncedValue } from '@rocket.chat/fuselage-hooks';
 import { escapeRegExp } from '@rocket.chat/string-helpers';
-import { useEndpoint, useToastMessageDispatch, useTranslation } from '@rocket.chat/ui-contexts';
+import { useEndpoint } from '@rocket.chat/ui-contexts';
 import { useQuery } from '@tanstack/react-query';
 import type { ReactElement, MutableRefObject } from 'react';
-import React, { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 
+import CustomUserStatusRow from './CustomUserStatusRow';
 import FilterByText from '../../../../components/FilterByText';
+import GenericNoResult from '../../../../components/GenericNoResults';
 import {
 	GenericTable,
 	GenericTableHeader,
@@ -16,15 +19,15 @@ import {
 } from '../../../../components/GenericTable';
 import { usePagination } from '../../../../components/GenericTable/hooks/usePagination';
 import { useSort } from '../../../../components/GenericTable/hooks/useSort';
-import CustomUserStatusRow from './CustomUserStatusRow';
 
 type CustomUserStatusProps = {
 	reload: MutableRefObject<() => void>;
 	onClick: (id: string) => void;
 };
 
+// TODO: Missing error state
 const CustomUserStatus = ({ reload, onClick }: CustomUserStatusProps): ReactElement | null => {
-	const t = useTranslation();
+	const { t } = useTranslation();
 	const [text, setText] = useState('');
 	const { current, itemsPerPage, setItemsPerPage: onSetItemsPerPage, setCurrent: onSetCurrent, ...paginationProps } = usePagination();
 	const { sortBy, sortDirection, setSort } = useSort<'name' | 'statusType'>('name');
@@ -32,7 +35,7 @@ const CustomUserStatus = ({ reload, onClick }: CustomUserStatusProps): ReactElem
 	const query = useDebouncedValue(
 		useMemo(
 			() => ({
-				query: JSON.stringify({ name: { $regex: escapeRegExp(text), $options: 'i' } }),
+				name: escapeRegExp(text),
 				sort: `{ "${sortBy}": ${sortDirection === 'asc' ? 1 : -1} }`,
 				count: itemsPerPage,
 				offset: current,
@@ -43,20 +46,18 @@ const CustomUserStatus = ({ reload, onClick }: CustomUserStatusProps): ReactElem
 	);
 
 	const getCustomUserStatus = useEndpoint('GET', '/v1/custom-user-status.list');
-	const dispatchToastMessage = useToastMessageDispatch();
 
-	const { data, isLoading, refetch, isFetched } = useQuery(
-		['custom-user-statuses', query],
-		async () => {
+	const { data, isLoading, refetch, isFetched } = useQuery({
+		queryKey: ['custom-user-statuses', query],
+
+		queryFn: async () => {
 			const { statuses } = await getCustomUserStatus(query);
 			return statuses;
 		},
-		{
-			onError: (error) => {
-				dispatchToastMessage({ type: 'error', message: error });
-			},
+		meta: {
+			apiErrorToastMessage: true,
 		},
-	);
+	});
 
 	useEffect(() => {
 		reload.current = refetch;
@@ -68,13 +69,8 @@ const CustomUserStatus = ({ reload, onClick }: CustomUserStatusProps): ReactElem
 
 	return (
 		<>
-			<FilterByText onChange={({ text }): void => setText(text)} />
-			{data.length === 0 && (
-				<States>
-					<StatesIcon name='magnifier' />
-					<StatesTitle>{t('No_results_found')}</StatesTitle>
-				</States>
-			)}
+			<FilterByText value={text} onChange={(event) => setText(event.target.value)} />
+			{data.length === 0 && <GenericNoResult />}
 			{data && data.length > 0 && (
 				<>
 					<GenericTable>
@@ -94,9 +90,7 @@ const CustomUserStatus = ({ reload, onClick }: CustomUserStatusProps): ReactElem
 						</GenericTableHeader>
 						<GenericTableBody>
 							{isLoading && <GenericTableLoadingTable headerCells={2} />}
-							{data?.map((status) => (
-								<CustomUserStatusRow key={status._id} status={status} onClick={onClick} />
-							))}
+							{data?.map((status) => <CustomUserStatusRow key={status._id} status={status} onClick={onClick} />)}
 						</GenericTableBody>
 					</GenericTable>
 					{isFetched && (

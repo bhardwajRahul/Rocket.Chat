@@ -24,3 +24,6 @@ import './afterForwardChatToAgent';
 import './applySimultaneousChatsRestrictions';
 import './afterInquiryQueued';
 import './sendPdfTranscriptOnClose';
+import './applyRoomRestrictions';
+import './afterTagRemoved';
+import './manageDepartmentUnit';

@@ -1,15 +1,28 @@
-import { Rooms, Subscriptions } from '@rocket.chat/models';
+import { Messages, Rooms, Subscriptions } from '@rocket.chat/models';
 
-import { Messages } from '../../../models/server';
 import { callbacks } from '../../../../lib/callbacks';
 import { FileUpload } from '../../../file-upload/server';
+import { notifyOnRoomChangedById, notifyOnSubscriptionChanged } from '../lib/notifyListener';
 
-export const deleteRoom = function (rid: string): void {
-	FileUpload.removeFilesByRoomId(rid);
-	Messages.removeByRoomId(rid);
-	callbacks.run('beforeDeleteRoom', rid);
-	Promise.await(Subscriptions.removeByRoomId(rid));
-	FileUpload.getStore('Avatars').deleteByRoomId(rid);
-	callbacks.run('afterDeleteRoom', rid);
-	Promise.await(Rooms.removeById(rid));
+export const deleteRoom = async function (rid: string): Promise<void> {
+	await FileUpload.removeFilesByRoomId(rid);
+
+	await Messages.removeByRoomId(rid);
+
+	await callbacks.run('beforeDeleteRoom', rid);
+
+	await Subscriptions.removeByRoomId(rid, {
+		async onTrash(doc) {
+			void notifyOnSubscriptionChanged(doc, 'removed');
+		},
+	});
+
+	await FileUpload.getStore('Avatars').deleteByRoomId(rid);
+
+	await callbacks.run('afterDeleteRoom', rid);
+
+	const { deletedCount } = await Rooms.removeById(rid);
+	if (deletedCount) {
+		void notifyOnRoomChangedById(rid, 'removed');
+	}
 };

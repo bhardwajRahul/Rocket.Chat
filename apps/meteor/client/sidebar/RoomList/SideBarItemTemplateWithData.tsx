@@ -1,21 +1,22 @@
-/* eslint-disable react/display-name */
 import type { IMessage, IRoom, ISubscription } from '@rocket.chat/core-typings';
 import { isDirectMessageRoom, isMultipleDirectMessageRoom, isOmnichannelRoom, isVideoConfMessage } from '@rocket.chat/core-typings';
 import { Badge, Sidebar, SidebarItemAction, SidebarItemActions, Margins } from '@rocket.chat/fuselage';
-import type { useTranslation } from '@rocket.chat/ui-contexts';
 import { useLayout } from '@rocket.chat/ui-contexts';
+import DOMPurify from 'dompurify';
+import type { TFunction } from 'i18next';
 import type { AllHTMLAttributes, ComponentType, ReactElement, ReactNode } from 'react';
-import React, { memo, useMemo } from 'react';
+import { memo, useMemo } from 'react';
 
-import { useOmnichannelPriorities } from '../../../ee/client/omnichannel/hooks/useOmnichannelPriorities';
-import { PriorityIcon } from '../../../ee/client/omnichannel/priorities/PriorityIcon';
+import { normalizeSidebarMessage } from './normalizeSidebarMessage';
 import { RoomIcon } from '../../components/RoomIcon';
 import { roomCoordinator } from '../../lib/rooms/roomCoordinator';
+import { isIOsDevice } from '../../lib/utils/isIOsDevice';
+import { useOmnichannelPriorities } from '../../omnichannel/hooks/useOmnichannelPriorities';
 import RoomMenu from '../RoomMenu';
+import { OmnichannelBadges } from '../badges/OmnichannelBadges';
 import type { useAvatarTemplate } from '../hooks/useAvatarTemplate';
-import { normalizeSidebarMessage } from './normalizeSidebarMessage';
 
-const getMessage = (room: IRoom, lastMessage: IMessage | undefined, t: ReturnType<typeof useTranslation>): string | undefined => {
+const getMessage = (room: IRoom, lastMessage: IMessage | undefined, t: TFunction): string | undefined => {
 	if (!lastMessage) {
 		return t('No_messages_yet');
 	}
@@ -34,9 +35,27 @@ const getMessage = (room: IRoom, lastMessage: IMessage | undefined, t: ReturnTyp
 	return `${lastMessage.u.name || lastMessage.u.username}: ${normalizeSidebarMessage(lastMessage, t)}`;
 };
 
+const getBadgeTitle = (userMentions: number, threadUnread: number, groupMentions: number, unread: number, t: TFunction) => {
+	const title = [] as string[];
+	if (userMentions) {
+		title.push(t('mentions_counter', { count: userMentions }));
+	}
+	if (threadUnread) {
+		title.push(t('threads_counter', { count: threadUnread }));
+	}
+	if (groupMentions) {
+		title.push(t('group_mentions_counter', { count: groupMentions }));
+	}
+	const count = unread - userMentions - groupMentions;
+	if (count > 0) {
+		title.push(t('unread_messages_counter', { count }));
+	}
+	return title.join(', ');
+};
+
 type RoomListRowProps = {
 	extended: boolean;
-	t: ReturnType<typeof useTranslation>;
+	t: TFunction;
 	SideBarItemTemplate: ComponentType<
 		{
 			icon: ReactNode;
@@ -45,7 +64,7 @@ type RoomListRowProps = {
 			actions: unknown;
 			href: string;
 			time?: Date;
-			menu?: ReactNode;
+			menu?: () => ReactNode;
 			menuOptions?: unknown;
 			subtitle?: ReactNode;
 			titleIcon?: string;
@@ -129,23 +148,27 @@ function SideBarItemTemplateWithData({
 	const { enabled: isPriorityEnabled } = useOmnichannelPriorities();
 
 	const message = extended && getMessage(room, lastMessage, t);
-	const subtitle = message ? <span className='message-body--unstyled' dangerouslySetInnerHTML={{ __html: message }} /> : null;
+	const subtitle = message ? (
+		<span className='message-body--unstyled' dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(message) }} />
+	) : null;
 
 	const threadUnread = tunread.length > 0;
 	const variant =
-		((userMentions || tunreadUser.length) && 'danger') || (threadUnread && 'primary') || (groupMentions && 'warning') || 'ghost';
+		((userMentions || tunreadUser.length) && 'danger') || (threadUnread && 'primary') || (groupMentions && 'warning') || 'secondary';
 
 	const isUnread = unread > 0 || threadUnread;
-	const showBadge = !hideUnreadStatus || (!hideMentionStatus && Boolean(userMentions));
+	const showBadge = !hideUnreadStatus || (!hideMentionStatus && (Boolean(userMentions) || tunreadUser.length > 0));
+
+	const badgeTitle = getBadgeTitle(userMentions, tunread.length, groupMentions, unread, t);
 
 	const badges = (
 		<Margins inlineStart={8}>
 			{showBadge && isUnread && (
-				<Badge {...({ style: { display: 'inline-flex', flexShrink: 0 } } as any)} variant={variant}>
+				<Badge role='status' {...({ style: { display: 'inline-flex', flexShrink: 0 } } as any)} variant={variant} title={badgeTitle}>
 					{unread + tunread?.length}
 				</Badge>
 			)}
-			{isOmnichannelRoom(room) && isPriorityEnabled && <PriorityIcon level={room.priorityWeight} />}
+			{isOmnichannelRoom(room) && <OmnichannelBadges room={room} />}
 		</Margins>
 	);
 
@@ -154,7 +177,7 @@ function SideBarItemTemplateWithData({
 			is='a'
 			id={id}
 			data-qa='sidebar-item'
-			aria-level={2}
+			data-unread={highlighted}
 			unread={highlighted}
 			selected={selected}
 			href={href}
@@ -171,21 +194,21 @@ function SideBarItemTemplateWithData({
 			avatar={AvatarTemplate && <AvatarTemplate {...room} />}
 			actions={actions}
 			menu={
-				!isAnonymous &&
-				(!isQueued || (isQueued && isPriorityEnabled)) &&
-				((): ReactElement => (
-					<RoomMenu
-						alert={alert}
-						threadUnread={threadUnread}
-						rid={rid}
-						unread={!!unread}
-						roomOpen={false}
-						type={type}
-						cl={cl}
-						name={title}
-						hideDefaultOptions={isQueued}
-					/>
-				))
+				!isIOsDevice && !isAnonymous && (!isQueued || (isQueued && isPriorityEnabled))
+					? (): ReactElement => (
+							<RoomMenu
+								alert={alert}
+								threadUnread={threadUnread}
+								rid={rid}
+								unread={!!unread}
+								roomOpen={selected}
+								type={type}
+								cl={cl}
+								name={title}
+								hideDefaultOptions={isQueued}
+							/>
+						)
+					: undefined
 			}
 		/>
 	);

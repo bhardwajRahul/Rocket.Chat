@@ -1,8 +1,7 @@
 import { RoomType } from '@rocket.chat/apps-engine/definition/rooms';
-import { LivechatVisitors, Rooms, LivechatDepartment } from '@rocket.chat/models';
+import { LivechatVisitors, Rooms, LivechatDepartment, Users, LivechatContacts } from '@rocket.chat/models';
 
-import { Users } from '../../../models/server';
-import { transformMappedData } from '../../../../ee/lib/misc/transformMappedData';
+import { transformMappedData } from './transformMappedData';
 
 export class AppRoomsConverter {
 	constructor(orch) {
@@ -28,33 +27,39 @@ export class AppRoomsConverter {
 
 		let u;
 		if (room.creator) {
-			const creator = Users.findOneById(room.creator.id);
+			const creator = await Users.findOneById(room.creator.id);
 			u = {
 				_id: creator._id,
 				username: creator.username,
+				name: creator.name,
 			};
 		}
 
 		let v;
 		if (room.visitor) {
-			const visitor = await LivechatVisitors.findOneById(room.visitor.id);
+			const visitor = await LivechatVisitors.findOneEnabledById(room.visitor.id);
+
+			const { lastMessageTs, phone } = room.visitorChannelInfo;
+
 			v = {
 				_id: visitor._id,
 				username: visitor.username,
 				token: visitor.token,
 				status: visitor.status || 'online',
+				...(lastMessageTs && { lastMessageTs }),
+				...(phone && { phone }),
 			};
 		}
 
 		let departmentId;
 		if (room.department) {
-			const department = await LivechatDepartment.findOneById(room.department.id);
+			const department = await LivechatDepartment.findOneById(room.department.id, { projection: { _id: 1 } });
 			departmentId = department._id;
 		}
 
 		let servedBy;
 		if (room.servedBy) {
-			const user = Users.findOneById(room.servedBy.id);
+			const user = await Users.findOneById(room.servedBy.id);
 			servedBy = {
 				_id: user._id,
 				username: user.username,
@@ -63,11 +68,17 @@ export class AppRoomsConverter {
 
 		let closedBy;
 		if (room.closedBy) {
-			const user = Users.findOneById(room.closedBy.id);
+			const user = await Users.findOneById(room.closedBy.id);
 			closedBy = {
 				_id: user._id,
 				username: user.username,
 			};
+		}
+
+		let contactId;
+		if (room.contact?._id) {
+			const contact = await LivechatContacts.findOneById(room.contact._id, { projection: { _id: 1 } });
+			contactId = contact._id;
 		}
 
 		const newRoom = {
@@ -95,6 +106,7 @@ export class AppRoomsConverter {
 			customFields: room.customFields,
 			livechatData: room.livechatData,
 			prid: typeof room.parentRoom === 'undefined' ? undefined : room.parentRoom.id,
+			contactId,
 			...(room._USERNAMES && { _USERNAMES: room._USERNAMES }),
 			...(room.source && {
 				source: {
@@ -106,8 +118,8 @@ export class AppRoomsConverter {
 		return Object.assign(newRoom, room._unmappedProperties_);
 	}
 
-	async convertRoom(room) {
-		if (!room) {
+	async convertRoom(originalRoom) {
+		if (!originalRoom) {
 			return undefined;
 		}
 
@@ -129,6 +141,7 @@ export class AppRoomsConverter {
 			_USERNAMES: '_USERNAMES',
 			description: 'description',
 			source: 'source',
+			closer: 'closer',
 			isDefault: (room) => {
 				const result = !!room.default;
 				delete room.default;
@@ -154,7 +167,7 @@ export class AppRoomsConverter {
 				delete room.t;
 				return result;
 			},
-			creator: (room) => {
+			creator: async (room) => {
 				const { u } = room;
 
 				if (!u) {
@@ -165,16 +178,43 @@ export class AppRoomsConverter {
 
 				return this.orch.getConverters().get('users').convertById(u._id);
 			},
-			visitor: async (room) => {
+			visitor: (room) => {
 				const { v } = room;
 
 				if (!v) {
 					return undefined;
 				}
 
-				delete room.v;
-
 				return this.orch.getConverters().get('visitors').convertById(v._id);
+			},
+			contact: (room) => {
+				const { contactId } = room;
+
+				if (!contactId) {
+					return undefined;
+				}
+
+				return this.orch.getConverters().get('contacts').convertById(contactId);
+			},
+			// Note: room.v is not just visitor, it also contains channel related visitor data
+			// so we need to pass this data to the converter
+			// So suppose you have a contact whom we're contacting using SMS via 2 phone no's,
+			// let's call X and Y. Then if the contact sends a message using X phone number,
+			// then room.v.phoneNo would be X and correspondingly we'll store the timestamp of
+			// the last message from this visitor from X phone no on room.v.lastMessageTs
+			visitorChannelInfo: (room) => {
+				const { v } = room;
+
+				if (!v) {
+					return undefined;
+				}
+
+				const { lastMessageTs, phone } = v;
+
+				return {
+					...(phone && { phone }),
+					...(lastMessageTs && { lastMessageTs }),
+				};
 			},
 			department: async (room) => {
 				const { departmentId } = room;
@@ -187,7 +227,20 @@ export class AppRoomsConverter {
 
 				return this.orch.getConverters().get('departments').convertById(departmentId);
 			},
-			servedBy: (room) => {
+			closedBy: async (room) => {
+				const { closedBy } = room;
+
+				if (!closedBy) {
+					return undefined;
+				}
+
+				delete room.closedBy;
+				if (originalRoom.closer === 'user') {
+					return this.orch.getConverters().get('users').convertById(closedBy._id);
+				}
+				return this.orch.getConverters().get('visitors').convertById(closedBy._id);
+			},
+			servedBy: async (room) => {
 				const { servedBy } = room;
 
 				if (!servedBy) {
@@ -198,7 +251,7 @@ export class AppRoomsConverter {
 
 				return this.orch.getConverters().get('users').convertById(servedBy._id);
 			},
-			responseBy: (room) => {
+			responseBy: async (room) => {
 				const { responseBy } = room;
 
 				if (!responseBy) {
@@ -222,7 +275,7 @@ export class AppRoomsConverter {
 			},
 		};
 
-		return transformMappedData(room, map);
+		return transformMappedData(originalRoom, map);
 	}
 
 	_convertTypeToApp(typeChar) {

@@ -1,23 +1,22 @@
+import { ILivechatAgentStatus } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Users } from '@rocket.chat/models';
 import { Meteor } from 'meteor/meteor';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
 
-import { Livechat } from '../lib/Livechat';
 import { hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
-import Users from '../../../models/server/models/Users';
 import { methodDeprecationLogger } from '../../../lib/server/lib/deprecationWarningLogger';
+import { Livechat as LivechatTS } from '../lib/LivechatTyped';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
-		'livechat:changeLivechatStatus'(params?: { status?: string; agentId?: string }): unknown;
+		'livechat:changeLivechatStatus'(params?: { status?: ILivechatAgentStatus; agentId?: string }): unknown;
 	}
 }
 
 Meteor.methods<ServerMethods>({
 	async 'livechat:changeLivechatStatus'({ status, agentId = Meteor.userId() } = {}) {
-		methodDeprecationLogger.warn(
-			'livechat:changeLivechatStatus is deprecated and will be removed in future versions of Rocket.Chat. Use /api/v1/livechat/agent.status REST API instead.',
-		);
+		methodDeprecationLogger.method('livechat:changeLivechatStatus', '7.0.0');
 
 		const uid = Meteor.userId();
 
@@ -27,8 +26,8 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		const agent = Users.findOneAgentById(agentId, {
-			fields: {
+		const agent = await Users.findOneAgentById(agentId, {
+			projection: {
 				status: 1,
 				statusLivechat: 1,
 			},
@@ -46,7 +45,9 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		const newStatus = status || (agent.statusLivechat === 'available' ? 'not-available' : 'available');
+		const newStatus: ILivechatAgentStatus =
+			status ||
+			(agent.statusLivechat === ILivechatAgentStatus.AVAILABLE ? ILivechatAgentStatus.NOT_AVAILABLE : ILivechatAgentStatus.AVAILABLE);
 
 		if (newStatus === agent.statusLivechat) {
 			return;
@@ -55,18 +56,18 @@ Meteor.methods<ServerMethods>({
 		if (agentId !== uid) {
 			if (!(await hasPermissionAsync(uid, 'manage-livechat-agents'))) {
 				throw new Meteor.Error('error-not-allowed', 'Not allowed', {
-					method: 'livechat:saveAgentInfo',
+					method: 'livechat:changeLivechatStatus',
 				});
 			}
-			return Livechat.setUserStatusLivechat(agentId, newStatus);
+			return LivechatTS.setUserStatusLivechat(agentId, newStatus);
 		}
 
-		if (!(await Livechat.allowAgentChangeServiceStatus(newStatus, agentId))) {
+		if (!(await LivechatTS.allowAgentChangeServiceStatus(newStatus, agentId))) {
 			throw new Meteor.Error('error-business-hours-are-closed', 'Not allowed', {
 				method: 'livechat:changeLivechatStatus',
 			});
 		}
 
-		return Livechat.setUserStatusLivechat(agentId, newStatus);
+		return LivechatTS.setUserStatusLivechat(agentId, newStatus);
 	},
 });

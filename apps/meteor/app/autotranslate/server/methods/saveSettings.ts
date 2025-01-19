@@ -1,11 +1,12 @@
-import { Meteor } from 'meteor/meteor';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Subscriptions, Rooms } from '@rocket.chat/models';
 import { check } from 'meteor/check';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
-import { Subscriptions } from '@rocket.chat/models';
+import { Meteor } from 'meteor/meteor';
 
 import { hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
+import { notifyOnSubscriptionChangedById } from '../../../lib/server/lib/notifyListener';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		'autoTranslate.saveSettings'(rid: string, field: string, value: string, options: { defaultLanguage: string }): boolean;
@@ -44,16 +45,43 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
+		let shouldNotifySubscriptionChanged = false;
+
 		switch (field) {
 			case 'autoTranslate':
-				await Subscriptions.updateAutoTranslateById(subscription._id, value === '1');
-				if (!subscription.autoTranslateLanguage && options.defaultLanguage) {
-					await Subscriptions.updateAutoTranslateLanguageById(subscription._id, options.defaultLanguage);
+				const room = await Rooms.findE2ERoomById(rid, { projection: { _id: 1 } });
+				if (room && value === '1') {
+					throw new Meteor.Error('error-e2e-enabled', 'Enabling auto-translation in E2E encrypted rooms is not allowed', {
+						method: 'saveAutoTranslateSettings',
+					});
 				}
+
+				const updateAutoTranslateResponse = await Subscriptions.updateAutoTranslateById(subscription._id, value === '1');
+				if (updateAutoTranslateResponse.modifiedCount) {
+					shouldNotifySubscriptionChanged = true;
+				}
+
+				if (!subscription.autoTranslateLanguage && options.defaultLanguage) {
+					const updateAutoTranslateLanguageResponse = await Subscriptions.updateAutoTranslateLanguageById(
+						subscription._id,
+						options.defaultLanguage,
+					);
+					if (updateAutoTranslateLanguageResponse.modifiedCount) {
+						shouldNotifySubscriptionChanged = true;
+					}
+				}
+
 				break;
 			case 'autoTranslateLanguage':
-				await Subscriptions.updateAutoTranslateLanguageById(subscription._id, value);
+				const updateAutoTranslateLanguage = await Subscriptions.updateAutoTranslateLanguageById(subscription._id, value);
+				if (updateAutoTranslateLanguage.modifiedCount) {
+					shouldNotifySubscriptionChanged = true;
+				}
 				break;
+		}
+
+		if (shouldNotifySubscriptionChanged) {
+			void notifyOnSubscriptionChangedById(subscription._id);
 		}
 
 		return true;

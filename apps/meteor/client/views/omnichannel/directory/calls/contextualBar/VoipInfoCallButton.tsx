@@ -1,7 +1,6 @@
-import { Button, Icon } from '@rocket.chat/fuselage';
-import { useTranslation } from '@rocket.chat/ui-contexts';
+import { Button } from '@rocket.chat/fuselage';
 import type { ComponentProps, ReactElement } from 'react';
-import React from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { useVoipOutboundStates } from '../../../../../contexts/CallContext';
 import { useDialModal } from '../../../../../hooks/useDialModal';
@@ -14,7 +13,7 @@ type VoipInfoCallButtonProps = Exclude<
 };
 
 export const VoipInfoCallButton = ({ phoneNumber, ...props }: VoipInfoCallButtonProps): ReactElement => {
-	const t = useTranslation();
+	const { t } = useTranslation();
 
 	const { openDialModal } = useDialModal();
 
@@ -25,12 +24,12 @@ export const VoipInfoCallButton = ({ phoneNumber, ...props }: VoipInfoCallButton
 			{...props} // this props are injected by ButtonGroup
 			onClick={(): void => openDialModal({ initialValue: phoneNumber })}
 			disabled={!outBoundCallsEnabledForUser || !phoneNumber}
-			title={outBoundCallsAllowed ? t('Call_number') : t('Call_number_enterprise_only')}
+			title={outBoundCallsAllowed ? t('Call_number') : t('Call_number_premium_only')}
 			display='flex'
 			justifyContent='center'
 			fontSize='p2'
+			icon='phone'
 		>
-			<Icon name='phone' size='x20' mie='4px' />
 			{t('Call')}
 		</Button>
 	);

@@ -1,18 +1,37 @@
 import os from 'os';
 
-import type { BrokerNode } from 'moleculer';
-import { ServiceBroker } from 'moleculer';
 import { License, ServiceClassInternal } from '@rocket.chat/core-services';
+import { InstanceStatus, defaultPingInterval, indexExpire } from '@rocket.chat/instance-status';
 import { InstanceStatus as InstanceStatusRaw } from '@rocket.chat/models';
-import { InstanceStatus } from '@rocket.chat/instance-status';
+import EJSON from 'ejson';
+import type { BrokerNode } from 'moleculer';
+import { ServiceBroker, Transporters, Serializers } from 'moleculer';
 
+import { getLogger } from './getLogger';
+import { getTransporter } from './getTransporter';
 import { StreamerCentral } from '../../../../server/modules/streamer/streamer.module';
 import type { IInstanceService } from '../../sdk/types/IInstanceService';
+
+const hostIP = process.env.INSTANCE_IP ? String(process.env.INSTANCE_IP).trim() : 'localhost';
+
+const { Base } = Serializers;
+
+class EJSONSerializer extends Base {
+	serialize(obj: any): Buffer {
+		return Buffer.from(EJSON.stringify(obj));
+	}
+
+	deserialize(buf: Buffer): any {
+		return EJSON.parse(buf.toString());
+	}
+}
 
 export class InstanceService extends ServiceClassInternal implements IInstanceService {
 	protected name = 'instance';
 
 	private broadcastStarted = false;
+
+	private transporter: Transporters.TCP | Transporters.NATS;
 
 	private broker: ServiceBroker;
 
@@ -20,16 +39,6 @@ export class InstanceService extends ServiceClassInternal implements IInstanceSe
 
 	constructor() {
 		super();
-
-		this.onEvent('watch.instanceStatus', async ({ clientAction, data }): Promise<void> => {
-			if (clientAction === 'removed') {
-				return;
-			}
-
-			if (clientAction === 'inserted' && data?.extraInformation?.port) {
-				this.connectNode(data);
-			}
-		});
 
 		this.onEvent('license.module', async ({ module, valid }) => {
 			if (module === 'scalability' && valid) {
@@ -60,17 +69,26 @@ export class InstanceService extends ServiceClassInternal implements IInstanceSe
 	}
 
 	async created() {
-		const port = process.env.TCP_PORT ? String(process.env.TCP_PORT).trim() : 0;
+		const transporter = getTransporter({
+			transporter: process.env.TRANSPORTER,
+			port: process.env.TCP_PORT,
+			extra: process.env.TRANSPORTER_EXTRA,
+		});
+
+		const activeInstances = InstanceStatusRaw.getActiveInstancesAddress();
+
+		this.transporter =
+			typeof transporter !== 'string'
+				? new Transporters.TCP({ ...transporter, urls: activeInstances })
+				: new Transporters.NATS({ url: transporter });
 
 		this.broker = new ServiceBroker({
 			nodeID: InstanceStatus.id(),
-			transporter: {
-				type: 'TCP',
-				options: {
-					port,
-					udpDiscovery: false,
-				},
-			},
+			transporter: this.transporter,
+			serializer: new EJSONSerializer(),
+			heartbeatInterval: defaultPingInterval,
+			heartbeatTimeout: indexExpire,
+			...getLogger(process.env),
 		});
 
 		this.broker.createService({
@@ -78,10 +96,17 @@ export class InstanceService extends ServiceClassInternal implements IInstanceSe
 			events: {
 				broadcast(ctx: any) {
 					const { eventName, streamName, args } = ctx.params;
+					const { nodeID } = ctx;
+
+					const fromLocalNode = nodeID === InstanceStatus.id();
+					if (fromLocalNode) {
+						return;
+					}
 
 					const instance = StreamerCentral.instances[streamName];
 					if (!instance) {
-						return 'stream-not-exists';
+						// return 'stream-not-exists';
+						return;
 					}
 
 					if (instance.serverOnly) {
@@ -99,7 +124,7 @@ export class InstanceService extends ServiceClassInternal implements IInstanceSe
 		await this.broker.start();
 
 		const instance = {
-			host: process.env.INSTANCE_IP ? String(process.env.INSTANCE_IP).trim() : 'localhost',
+			host: hostIP,
 			port: String(process.env.PORT).trim(),
 			tcpPort: (this.broker.transit?.tx as any)?.nodes?.localNode?.port,
 			os: {
@@ -118,12 +143,16 @@ export class InstanceService extends ServiceClassInternal implements IInstanceSe
 
 		await InstanceStatus.registerInstance('rocket.chat', instance);
 
-		const hasLicense = await License.hasLicense('scalability');
-		if (!hasLicense) {
-			return;
-		}
+		try {
+			const hasLicense = await License.hasModule('scalability');
+			if (!hasLicense) {
+				return;
+			}
 
-		await this.startBroadcast();
+			await this.startBroadcast();
+		} catch (error) {
+			console.error('Instance service did not start correctly', error);
+		}
 	}
 
 	private async startBroadcast() {
@@ -134,29 +163,6 @@ export class InstanceService extends ServiceClassInternal implements IInstanceSe
 		this.broadcastStarted = true;
 
 		StreamerCentral.on('broadcast', this.sendBroadcast.bind(this));
-
-		await InstanceStatusRaw.find(
-			{
-				'extraInformation.tcpPort': {
-					$exists: true,
-				},
-			},
-			{
-				sort: {
-					_createdAt: -1,
-				},
-			},
-		).forEach(this.connectNode.bind(this));
-	}
-
-	private connectNode(record: any) {
-		if (record._id === InstanceStatus.id()) {
-			return;
-		}
-
-		const { host, tcpPort } = record.extraInformation;
-
-		(this.broker?.transit?.tx as any).addOfflineNode(record._id, host, tcpPort);
 	}
 
 	private sendBroadcast(streamName: string, eventName: string, args: unknown[]) {
