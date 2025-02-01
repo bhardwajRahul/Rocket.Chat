@@ -1,16 +1,16 @@
-import { Meteor } from 'meteor/meteor';
-import { check } from 'meteor/check';
-import { api, Team } from '@rocket.chat/core-services';
+import { api, Message, Team } from '@rocket.chat/core-services';
 import { isRoomFederated } from '@rocket.chat/core-typings';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
-import { Subscriptions } from '@rocket.chat/models';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Subscriptions, Rooms, Users, Roles } from '@rocket.chat/models';
+import { check } from 'meteor/check';
+import { Meteor } from 'meteor/meteor';
 
-import { getUsersInRole } from '../../app/authorization/server';
 import { hasPermissionAsync } from '../../app/authorization/server/functions/hasPermission';
-import { Users, Messages, Rooms } from '../../app/models/server';
+import { notifyOnSubscriptionChangedById } from '../../app/lib/server/lib/notifyListener';
 import { settings } from '../../app/settings/server';
+import { syncRoomRolePriorityForUserAndRoom } from '../lib/roles/syncRoomRolePriority';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		removeRoomOwner(rid: string, userId: string): boolean;
@@ -30,14 +30,20 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		const room = Rooms.findOneById(rid, { fields: { t: 1, federated: 1 } });
+		const room = await Rooms.findOneById(rid, { projection: { t: 1, federated: 1 } });
+		if (!room) {
+			throw new Meteor.Error('error-invalid-room', 'Invalid room', {
+				method: 'removeRoomOwner',
+			});
+		}
+
 		if (!(await hasPermissionAsync(uid, 'set-owner', rid)) && !isRoomFederated(room)) {
 			throw new Meteor.Error('error-not-allowed', 'Not allowed', {
 				method: 'removeRoomOwner',
 			});
 		}
 
-		const user = Users.findOneById(userId);
+		const user = await Users.findOneById(userId);
 		if (!user?.username) {
 			throw new Meteor.Error('error-invalid-user', 'Invalid user', {
 				method: 'removeRoomOwner',
@@ -58,7 +64,7 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		const numOwners = await (await getUsersInRole('owner', rid)).count();
+		const numOwners = await Roles.countUsersInRole('owner', rid);
 
 		if (numOwners === 1) {
 			throw new Meteor.Error('error-remove-last-owner', 'This is the last owner. Please set a new owner before removing this one.', {
@@ -66,17 +72,21 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		await Subscriptions.removeRoleById(subscription._id, 'owner');
+		const removeRoleResponse = await Subscriptions.removeRoleById(subscription._id, 'owner');
+		await syncRoomRolePriorityForUserAndRoom(userId, rid, subscription.roles?.filter((r) => r !== 'owner') || []);
 
-		const fromUser = Users.findOneById(uid);
+		if (removeRoleResponse.modifiedCount) {
+			void notifyOnSubscriptionChangedById(subscription._id);
+		}
 
-		Messages.createSubscriptionRoleRemovedWithRoomIdAndUser(rid, user, {
-			u: {
-				_id: fromUser._id,
-				username: fromUser.username,
-			},
-			role: 'owner',
-		});
+		const fromUser = await Users.findOneById(uid);
+		if (!fromUser) {
+			throw new Meteor.Error('error-invalid-user', 'Invalid user', {
+				method: 'removeRoomOwner',
+			});
+		}
+
+		await Message.saveSystemMessage('subscription-role-removed', rid, user.username, fromUser, { role: 'owner' });
 
 		const team = await Team.getOneByMainRoomId(rid);
 		if (team) {
@@ -92,7 +102,7 @@ Meteor.methods<ServerMethods>({
 				name: user.name,
 			},
 			scope: rid,
-		};
+		} as const;
 		if (settings.get('UI_DisplayRoles')) {
 			void api.broadcast('user.roleUpdate', event);
 		}

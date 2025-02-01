@@ -1,9 +1,9 @@
 import POP3Lib from '@rocket.chat/poplib';
 import { simpleParser } from 'mailparser';
 
-import { settings } from '../../../settings';
-import { IMAPInterceptor } from '../../../../server/email/IMAPInterceptor';
 import { processDirectEmail } from './processDirectEmail';
+import { IMAPInterceptor } from '../../../../server/email/IMAPInterceptor';
+import { settings } from '../../../settings/server';
 
 export class DirectReplyIMAPInterceptor extends IMAPInterceptor {
 	constructor(imapConfig, options = {}) {
@@ -21,7 +21,7 @@ export class DirectReplyIMAPInterceptor extends IMAPInterceptor {
 
 		super(imapConfig, options);
 
-		this.on('email', (email) => Promise.await(processDirectEmail(email)));
+		this.on('email', (email) => processDirectEmail(email));
 	}
 }
 
@@ -73,7 +73,7 @@ class POP3Intercepter {
 
 			// parse raw email data to  JSON object
 			simpleParser(data, (err, mail) => {
-				Promise.await(processDirectEmail(mail));
+				processDirectEmail(mail);
 			});
 
 			this.currentMsgCount += 1;
@@ -98,16 +98,16 @@ class POP3Intercepter {
 		});
 
 		// invalid server state
-		this.pop3.on('invalid-state', function (cmd) {
+		this.pop3.on('invalid-state', (cmd) => {
 			console.log(`Invalid state. You tried calling ${cmd}`);
 		});
 
-		this.pop3.on('error', function (cmd) {
+		this.pop3.on('error', (cmd) => {
 			console.log(`error state. You tried calling ${cmd}`);
 		});
 
 		// locked => command already running, not finished yet
-		this.pop3.on('locked', function (cmd) {
+		this.pop3.on('locked', (cmd) => {
 			console.log(`Current command has not finished yet. You tried calling ${cmd}`);
 		});
 	}
@@ -127,10 +127,13 @@ export class POP3Helper {
 
 	start() {
 		this.log('POP3 started');
-		this.running = setInterval(() => {
-			// get new emails and process
-			this.POP3 = new POP3Intercepter();
-		}, Math.max(this.frequency * 60 * 1000, 2 * 60 * 1000));
+		this.running = setInterval(
+			() => {
+				// get new emails and process
+				this.POP3 = new POP3Intercepter();
+			},
+			Math.max(this.frequency * 60 * 1000, 2 * 60 * 1000),
+		);
 	}
 
 	log(...args) {

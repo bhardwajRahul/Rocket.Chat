@@ -1,13 +1,16 @@
 import { EventEmitter } from 'events';
 
 import { InstanceStatus } from '@rocket.chat/models';
+import { injectCurrentContext, tracerActiveSpan } from '@rocket.chat/tracing';
 
+import { asyncLocalStorage } from '.';
+import type { EventSignatures } from './events/Events';
 import type { IBroker, IBrokerNode } from './types/IBroker';
 import type { ServiceClass, IServiceClass } from './types/ServiceClass';
-import { asyncLocalStorage } from '.';
-import type { EventSignatures } from './Events';
 
 export class LocalBroker implements IBroker {
+	private started = false;
+
 	private methods = new Map<string, (...params: any) => any>();
 
 	private events = new EventEmitter();
@@ -15,29 +18,28 @@ export class LocalBroker implements IBroker {
 	private services = new Set<IServiceClass>();
 
 	async call(method: string, data: any): Promise<any> {
-		const result = await asyncLocalStorage.run(
-			{
-				id: 'ctx.id',
-				nodeID: 'ctx.nodeID',
-				requestID: 'ctx.requestID',
-				broker: this,
+		return tracerActiveSpan(
+			`action ${method}`,
+			{},
+			() => {
+				return asyncLocalStorage.run(
+					{
+						id: 'ctx.id',
+						nodeID: 'ctx.nodeID',
+						requestID: 'ctx.requestID',
+						broker: this,
+					},
+					(): any => this.methods.get(method)?.(...data),
+				);
 			},
-			(): any => this.methods.get(method)?.(...data),
+			injectCurrentContext(),
 		);
-
-		return result;
 	}
 
-	async waitAndCall(method: string, data: any): Promise<any> {
-		return this.call(method, data);
-	}
-
-	destroyService(instance: ServiceClass): void {
+	async destroyService(instance: ServiceClass): Promise<void> {
 		const namespace = instance.getName();
 
-		instance.getEvents().forEach((eventName) => {
-			this.events.removeListener(eventName, instance.emit);
-		});
+		instance.getEvents().forEach((event) => event.listeners.forEach((listener) => this.events.removeListener(event.eventName, listener)));
 
 		const methods =
 			instance.constructor?.name === 'Object'
@@ -50,7 +52,8 @@ export class LocalBroker implements IBroker {
 
 			this.methods.delete(`${namespace}.${method}`);
 		}
-		instance.stopped();
+		instance.removeAllListeners();
+		await instance.stopped();
 	}
 
 	createService(instance: IServiceClass): void {
@@ -60,11 +63,7 @@ export class LocalBroker implements IBroker {
 
 		instance.created();
 
-		instance.getEvents().forEach((eventName) => {
-			this.events.on(eventName, (...args) => {
-				instance.emit(eventName, ...(args as Parameters<EventSignatures[typeof eventName]>));
-			});
-		});
+		instance.getEvents().forEach((event) => event.listeners.forEach((listener) => this.events.on(event.eventName, listener)));
 
 		const methods =
 			instance.constructor?.name === 'Object'
@@ -77,6 +76,9 @@ export class LocalBroker implements IBroker {
 			const i = instance as any;
 
 			this.methods.set(`${namespace}.${method}`, i[method].bind(i));
+		}
+		if (this.started) {
+			void instance.started();
 		}
 	}
 
@@ -111,5 +113,6 @@ export class LocalBroker implements IBroker {
 
 	async start(): Promise<void> {
 		await Promise.all([...this.services].map((service) => service.started()));
+		this.started = true;
 	}
 }

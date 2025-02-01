@@ -1,11 +1,11 @@
 import type { IOmnichannelRoom } from '@rocket.chat/core-typings';
-import { Meteor } from 'meteor/meteor';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
 import { Users, LivechatRooms, Subscriptions as SubscriptionRaw } from '@rocket.chat/models';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
+import { Meteor } from 'meteor/meteor';
 
 import { hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
-import { Livechat } from '../lib/LivechatTyped';
 import { methodDeprecationLogger } from '../../../lib/server/lib/deprecationWarningLogger';
+import { Livechat } from '../lib/LivechatTyped';
 
 type CloseRoomOptions = {
 	clientAction?: boolean;
@@ -35,7 +35,7 @@ type LivechatCloseRoomOptions = Omit<CloseRoomOptions, 'generateTranscriptPdf'> 
 	};
 };
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		'livechat:closeRoom'(roomId: string, comment?: string, options?: CloseRoomOptions): void;
@@ -44,9 +44,7 @@ declare module '@rocket.chat/ui-contexts' {
 
 Meteor.methods<ServerMethods>({
 	async 'livechat:closeRoom'(roomId: string, comment?: string, options?: CloseRoomOptions) {
-		methodDeprecationLogger.warn(
-			'livechat:closeRoom is deprecated and will be removed in next major version. Use /api/v1/livechat/room.closeByUser API instead.',
-		);
+		methodDeprecationLogger.method('livechat:closeRoom', '7.0.0');
 
 		const userId = Meteor.userId();
 		if (!userId || !(await hasPermissionAsync(userId, 'close-livechat-room'))) {
@@ -62,6 +60,16 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
+		const subscription = await SubscriptionRaw.findOneByRoomIdAndUserId(roomId, userId, {
+			projection: {
+				_id: 1,
+			},
+		});
+		if (!room.open && subscription) {
+			await SubscriptionRaw.removeByRoomId(roomId);
+			return;
+		}
+
 		if (!room.open) {
 			throw new Meteor.Error('room-closed', 'Room closed', { method: 'livechat:closeRoom' });
 		}
@@ -73,11 +81,6 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		const subscription = await SubscriptionRaw.findOneByRoomIdAndUserId(roomId, user._id, {
-			projection: {
-				_id: 1,
-			},
-		});
 		if (!subscription && !(await hasPermissionAsync(userId, 'close-others-livechat-room'))) {
 			throw new Meteor.Error('error-not-authorized', 'Not authorized', {
 				method: 'livechat:closeRoom',

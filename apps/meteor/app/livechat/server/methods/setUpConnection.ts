@@ -1,10 +1,11 @@
-import { Meteor } from 'meteor/meteor';
+import { UserStatus } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
 import { check } from 'meteor/check';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
+import { Meteor } from 'meteor/meteor';
 
-import { Livechat } from '../lib/Livechat';
+import { Livechat } from '../lib/LivechatTyped';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		'livechat:setUpConnection'(data: { token: string }): void;
@@ -32,7 +33,7 @@ Meteor.methods<ServerMethods>({
 		if (this.connection && !this.connection.livechatToken) {
 			this.connection.livechatToken = token;
 			this.connection.onClose(async () => {
-				await Livechat.notifyGuestStatusChanged(token, 'offline');
+				await Livechat.notifyGuestStatusChanged(token, UserStatus.OFFLINE);
 			});
 		}
 	},

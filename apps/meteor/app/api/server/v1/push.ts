@@ -1,12 +1,13 @@
-import { Meteor } from 'meteor/meteor';
+import { Messages, AppsTokens, Users, Rooms, Settings } from '@rocket.chat/models';
 import { Random } from '@rocket.chat/random';
 import { Match, check } from 'meteor/check';
-import { Messages, AppsTokens } from '@rocket.chat/models';
+import { Meteor } from 'meteor/meteor';
 
-import { API } from '../api';
-import PushNotification from '../../../push-notifications/server/lib/PushNotification';
+import { executePushTest } from '../../../../server/lib/pushConfig';
 import { canAccessRoomAsync } from '../../../authorization/server/functions/canAccessRoom';
-import { Users, Rooms } from '../../../models/server';
+import PushNotification from '../../../push-notifications/server/lib/PushNotification';
+import { settings } from '../../../settings/server';
+import { API } from '../api';
 
 API.v1.addRoute(
 	'push.token',
@@ -86,7 +87,7 @@ API.v1.addRoute(
 				}),
 			);
 
-			const receiver = Users.findOneById(this.userId);
+			const receiver = await Users.findOneById(this.userId);
 			if (!receiver) {
 				throw new Error('error-user-not-found');
 			}
@@ -96,7 +97,7 @@ API.v1.addRoute(
 				throw new Error('error-message-not-found');
 			}
 
-			const room = Rooms.findOneById(message.rid);
+			const room = await Rooms.findOneById(message.rid);
 			if (!room) {
 				throw new Error('error-room-not-found');
 			}
@@ -108,6 +109,45 @@ API.v1.addRoute(
 			const data = await PushNotification.getNotificationForMessageId({ receiver, room, message });
 
 			return API.v1.success({ data });
+		},
+	},
+);
+
+API.v1.addRoute(
+	'push.info',
+	{ authRequired: true },
+	{
+		async get() {
+			const defaultGateway = (await Settings.findOneById('Push_gateway', { projection: { packageValue: 1 } }))?.packageValue;
+			const defaultPushGateway = settings.get('Push_gateway') === defaultGateway;
+			return API.v1.success({
+				pushGatewayEnabled: settings.get('Push_enable'),
+				defaultPushGateway,
+			});
+		},
+	},
+);
+
+API.v1.addRoute(
+	'push.test',
+	{
+		authRequired: true,
+		rateLimiterOptions: {
+			numRequestsAllowed: 1,
+			intervalTimeInMS: 1000,
+		},
+		permissionsRequired: ['test-push-notifications'],
+	},
+	{
+		async post() {
+			if (settings.get('Push_enable') !== true) {
+				throw new Meteor.Error('error-push-disabled', 'Push is disabled', {
+					method: 'push_test',
+				});
+			}
+
+			const tokensCount = await executePushTest(this.userId, this.user.username);
+			return API.v1.success({ tokensCount });
 		},
 	},
 );

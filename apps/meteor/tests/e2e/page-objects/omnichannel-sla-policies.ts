@@ -60,11 +60,11 @@ export class OmnichannelSlaPolicies {
 	}
 
 	get inputSearch() {
-		return this.page.locator('[placeholder="Search"]');
+		return this.page.getByRole('main').getByRole('textbox', { name: 'Search' });
 	}
 
-	get btnNew() {
-		return this.page.locator('button.rcx-button >> text="New"');
+	headingButtonNew(name: string) {
+		return this.page.locator(`role=main >> role=button[name="${name}"]`).first();
 	}
 
 	get btnDelete() {
@@ -72,10 +72,10 @@ export class OmnichannelSlaPolicies {
 	}
 
 	get txtDeleteModalTitle() {
-		return this.page.locator('div.rcx-modal__title >> text="Are you sure?"');
+		return this.page.locator('role=dialog >> text="Are you sure?"');
 	}
 
 	get txtEmptyState() {
-		return this.page.locator('div >> text="No data found"');
+		return this.page.locator('div >> text="No results found"');
 	}
 }

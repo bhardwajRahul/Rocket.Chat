@@ -1,12 +1,12 @@
 // DEPRECATE
-import { Meteor } from 'meteor/meteor';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Rooms } from '@rocket.chat/models';
 import { check } from 'meteor/check';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
+import { Meteor } from 'meteor/meteor';
 
-import { Rooms } from '../../app/models/server';
 import { canAccessRoomAsync } from '../../app/authorization/server';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		getRoomIdByNameOrId(rid: string): string;
@@ -23,7 +23,7 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		const room = Rooms.findOneById(rid) || Rooms.findOneByName(rid);
+		const room = (await Rooms.findOneById(rid)) || (await Rooms.findOneByName(rid));
 
 		if (room == null) {
 			throw new Meteor.Error('error-not-allowed', 'Not allowed', {

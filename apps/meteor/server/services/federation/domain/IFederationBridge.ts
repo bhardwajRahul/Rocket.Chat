@@ -39,6 +39,30 @@ export interface IFederationBridge {
 	createDirectMessageRoom(externalCreatorId: string, inviteesExternalIds: string[], extraData?: Record<string, any>): Promise<string>;
 	inviteToRoom(externalRoomId: string, externalInviterId: string, externalInviteeId: string): Promise<void>;
 	sendMessage(externalRoomId: string, externalSenderId: string, message: IMessage): Promise<string>;
+	sendThreadMessage(externalRoomId: string, externalSenderId: string, message: IMessage, relatesToEventId: string): Promise<string>;
+	sendMessageFileToThread(
+		externalRoomId: string,
+		externaSenderId: string,
+		content: Buffer,
+		fileDetails: { filename: string; fileSize: number; mimeType: string; metadata?: { width?: number; height?: number; format?: string } },
+		relatesToEventId: string,
+	): Promise<string>;
+	sendThreadReplyToMessage(
+		externalRoomId: string,
+		externalUserId: string,
+		eventToReplyTo: string,
+		eventOriginalSender: string,
+		message: string,
+		relatesToEventId: string,
+	): Promise<string>;
+	sendReplyMessageFileToThread(
+		externalRoomId: string,
+		externaSenderId: string,
+		content: Buffer,
+		fileDetails: { filename: string; fileSize: number; mimeType: string; metadata?: { width?: number; height?: number; format?: string } },
+		eventToReplyTo: string,
+		relatesToEventId: string,
+	): Promise<string>;
 	createUser(username: string, name: string, domain: string, avatarUrl?: string): Promise<string>;
 	isUserIdFromTheSameHomeserver(externalUserId: string, domain: string): boolean;
 	extractHomeserverOrigin(externalUserId: string): string;
@@ -58,7 +82,7 @@ export interface IFederationBridge {
 		fileDetails: { filename: string; fileSize: number; mimeType: string; metadata?: { width?: number; height?: number; format?: string } },
 	): Promise<string>;
 	uploadContent(externalSenderId: string, content: Buffer, options?: { name?: string; type?: string }): Promise<string | undefined>;
-	convertMatrixUrlToHttp(externalUserId: string, matrixUrl: string): string;
+	convertMatrixUrlToHttp(externalUserId: string, matrixUrl: string): Promise<string>;
 	sendReplyToMessage(
 		externalRoomId: string,
 		externalUserId: string,
@@ -81,4 +105,11 @@ export interface IFederationBridge {
 	getRoomTopic(externalRoomId: string, externalUserId: string): Promise<string | undefined>;
 	setRoomName(externalRoomId: string, externalUserId: string, roomName: string): Promise<void>;
 	setRoomTopic(externalRoomId: string, externalUserId: string, roomTopic: string): Promise<void>;
+	verifyInviteeIds(matrixIds: string[]): Promise<Map<string, string>>;
+	getRoomData(
+		externalUserId: string,
+		externalRoomId: string,
+	): Promise<{ creator: { id: string; username: string }; name: string; joinedMembers: string[] } | undefined>;
+	ping(): Promise<{ durationMs: number }>;
+	deactivateUser(externalUserId: string): Promise<void>;
 }

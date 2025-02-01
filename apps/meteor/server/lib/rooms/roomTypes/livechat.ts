@@ -1,4 +1,5 @@
 import type { AtLeast, ValueOf } from '@rocket.chat/core-typings';
+import { isMessageFromVisitor } from '@rocket.chat/core-typings';
 import { LivechatVisitors, LivechatRooms } from '@rocket.chat/models';
 
 import { RoomSettingsEnum, RoomMemberActions } from '../../../../definition/IRoomTypeConfig';
@@ -27,18 +28,21 @@ roomCoordinator.add(LivechatRoomType, {
 	},
 
 	async canAccessUploadedFile({ rc_token: token, rc_rid: rid }) {
-		return token && rid && !!(await LivechatRooms.findOneOpenByRoomIdAndVisitorToken(rid, token));
+		return token && rid && !!(await LivechatRooms.findOneByIdAndVisitorToken(rid, token));
 	},
 
 	async getNotificationDetails(room, _sender, notificationMessage, userId) {
-		const title = `[Omnichannel] ${this.roomName(room, userId)}`;
+		const roomName = await this.roomName(room, userId);
+		const title = `[Omnichannel] ${roomName}`;
 		const text = notificationMessage;
 
-		return { title, text };
+		return { title, text, name: roomName };
 	},
 
-	getMsgSender(senderId) {
-		return LivechatVisitors.findOneById(senderId);
+	async getMsgSender(message) {
+		if (isMessageFromVisitor(message)) {
+			return LivechatVisitors.findOneEnabledById(message.u._id);
+		}
 	},
 
 	getReadReceiptsExtraData(message) {

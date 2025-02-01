@@ -3,11 +3,16 @@ import type { ReactElement } from 'react';
 import { Trans } from 'react-i18next';
 
 export const RegisterTitle = (): ReactElement | null => {
-	const siteName = useSetting<string>('Site_Name');
-	const hideTitle = useSetting<boolean>('Layout_Login_Hide_Title');
+	const siteName = useSetting('Site_Name', 'Rocket.Chat');
+	const hideTitle = useSetting('Layout_Login_Hide_Title', false);
 
 	if (hideTitle) {
 		return null;
 	}
-	return <Trans i18nKey='registration.component.welcome'>Welcome to {siteName} workspace</Trans>;
+
+	return (
+		<span id='welcomeTitle'>
+			<Trans i18nKey='registration.component.welcome'>Welcome to {siteName} workspace</Trans>
+		</span>
+	);
 };

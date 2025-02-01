@@ -1,10 +1,10 @@
-import { Meteor } from 'meteor/meteor';
+import { Messages } from '@rocket.chat/models';
 import { Random } from '@rocket.chat/random';
+import { Meteor } from 'meteor/meteor';
 import objectPath from 'object-path';
 
-import { slashCommands } from '../../../utils/server';
-import { Messages } from '../../../models/server';
 import { canAccessRoomIdAsync } from '../../../authorization/server/functions/canAccessRoom';
+import { slashCommands } from '../../../utils/server/slashCommand';
 import { API } from '../api';
 import { getLoggedInUser } from '../helpers/getLoggedInUser';
 import { getPaginationItems } from '../helpers/getPaginationItems';
@@ -198,12 +198,12 @@ API.v1.addRoute(
 			}
 
 			if (!(await canAccessRoomIdAsync(body.roomId, this.userId))) {
-				return API.v1.unauthorized();
+				return API.v1.forbidden();
 			}
 
 			const params = body.params ? body.params : '';
 			if (typeof body.tmid === 'string') {
-				const thread = Messages.findOneById(body.tmid);
+				const thread = await Messages.findOneById(body.tmid);
 				if (!thread || thread.rid !== body.roomId) {
 					return API.v1.failure('Invalid thread.');
 				}
@@ -218,7 +218,7 @@ API.v1.addRoute(
 
 			const { triggerId } = body;
 
-			const result = await slashCommands.run(cmd, params, message, triggerId);
+			const result = await slashCommands.run({ command: cmd, params, message, triggerId, userId: this.userId });
 
 			return API.v1.success({ result });
 		},
@@ -252,7 +252,7 @@ API.v1.addRoute(
 			}
 
 			if (!(await canAccessRoomIdAsync(query.roomId, user?._id))) {
-				return API.v1.unauthorized();
+				return API.v1.forbidden();
 			}
 
 			const params = query.params ? query.params : '';
@@ -304,12 +304,12 @@ API.v1.addRoute(
 			}
 
 			if (!(await canAccessRoomIdAsync(body.roomId, this.userId))) {
-				return API.v1.unauthorized();
+				return API.v1.forbidden();
 			}
 
 			const { params = '' } = body;
 			if (body.tmid) {
-				const thread = Messages.findOneById(body.tmid);
+				const thread = await Messages.findOneById(body.tmid);
 				if (!thread || thread.rid !== body.roomId) {
 					return API.v1.failure('Invalid thread.');
 				}

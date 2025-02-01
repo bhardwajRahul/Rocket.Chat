@@ -9,8 +9,13 @@ export const useCurrentChats = (query: GETLivechatRoomsParams): UseQueryResult<O
 
 	const debouncedQuery = useDebouncedValue(query, 500);
 
-	return useQuery(['current-chats', debouncedQuery], () => currentChats(debouncedQuery), {
+	return useQuery({
+		queryKey: ['current-chats', debouncedQuery],
+		queryFn: () => currentChats(debouncedQuery),
+
 		// TODO: Update this to use an stream of room changes instead of polling
-		cacheTime: 0,
+		refetchOnWindowFocus: false,
+
+		gcTime: 0,
 	});
 };

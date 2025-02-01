@@ -1,12 +1,10 @@
 import { Box } from '@rocket.chat/fuselage';
-import { useEndpoint, useTranslation } from '@rocket.chat/ui-contexts';
+import { useEndpoint } from '@rocket.chat/ui-contexts';
 import { useQuery } from '@tanstack/react-query';
-import React from 'react';
+import { useTranslation } from 'react-i18next';
 
+import { InfoPanelField, InfoPanelLabel, InfoPanelText } from '../../../components/InfoPanel';
 import { FormSkeleton } from '../directory/components/FormSkeleton';
-import Field from './Field';
-import Info from './Info';
-import Label from './Label';
 
 type CustomFieldProps = {
 	id: string;
@@ -14,16 +12,19 @@ type CustomFieldProps = {
 };
 
 const CustomField = ({ id, value }: CustomFieldProps) => {
-	const t = useTranslation();
+	const { t } = useTranslation();
 	const getCustomField = useEndpoint('GET', '/v1/livechat/custom-fields/:_id', { _id: id });
-	const { data, isLoading, isError } = useQuery(['/v1/livechat/custom-fields', id], () => getCustomField());
+	const { data, isPending, isError } = useQuery({
+		queryKey: ['/v1/livechat/custom-field', id],
+		queryFn: () => getCustomField(),
+	});
 
-	if (isLoading) {
+	if (isPending) {
 		return <FormSkeleton />;
 	}
 
 	if (isError || !data?.customField) {
-		return <Box mbs='x16'>{t('Custom_Field_Not_Found')}</Box>;
+		return <Box mbs={16}>{t('Custom_Field_Not_Found')}</Box>;
 	}
 
 	const { label } = data.customField;
@@ -33,10 +34,10 @@ const CustomField = ({ id, value }: CustomFieldProps) => {
 	}
 
 	return (
-		<Field>
-			<Label>{label}</Label>
-			<Info>{value}</Info>
-		</Field>
+		<InfoPanelField>
+			<InfoPanelLabel>{label}</InfoPanelLabel>
+			<InfoPanelText>{value}</InfoPanelText>
+		</InfoPanelField>
 	);
 };
 

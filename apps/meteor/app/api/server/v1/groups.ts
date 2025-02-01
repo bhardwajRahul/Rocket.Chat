@@ -1,26 +1,67 @@
+import { Team, isMeteorError } from '@rocket.chat/core-services';
+import type { IIntegration, IUser, IRoom, RoomType } from '@rocket.chat/core-typings';
+import { Integrations, Messages, Rooms, Subscriptions, Uploads, Users } from '@rocket.chat/models';
+import { isGroupsOnlineProps, isGroupsMessagesProps } from '@rocket.chat/rest-typings';
+import { check, Match } from 'meteor/check';
 import { Meteor } from 'meteor/meteor';
-import { Match, check } from 'meteor/check';
-import type { IIntegration, IUser, RoomType } from '@rocket.chat/core-typings';
-import { Subscriptions, Rooms, Messages, Users, Uploads, Integrations } from '@rocket.chat/models';
-import { Team } from '@rocket.chat/core-services';
 import type { Filter } from 'mongodb';
 
-import { Users as UsersSync } from '../../../models/server';
-import { canAccessRoomAsync, roomAccessAttributes } from '../../../authorization/server';
-import {
-	hasPermissionAsync,
-	hasAllPermissionAsync,
-	hasAtLeastOnePermissionAsync,
-} from '../../../authorization/server/functions/hasPermission';
-import { API } from '../api';
-import { composeRoomWithLastMessage } from '../helpers/composeRoomWithLastMessage';
-import { getUserFromParams, getUserListFromParams } from '../helpers/getUserFromParams';
-import { addUserToFileObj } from '../helpers/addUserToFileObj';
-import { mountIntegrationQueryBasedOnPermissions } from '../../../integrations/server/lib/mountQueriesBasedOnPermission';
+import { eraseRoom } from '../../../../server/lib/eraseRoom';
 import { findUsersOfRoom } from '../../../../server/lib/findUsersOfRoom';
+import { addAllUserToRoomFn } from '../../../../server/methods/addAllUserToRoom';
+import { hideRoomMethod } from '../../../../server/methods/hideRoom';
+import { removeUserFromRoomMethod } from '../../../../server/methods/removeUserFromRoom';
+import { canAccessRoomAsync, roomAccessAttributes } from '../../../authorization/server';
+import { hasAllPermissionAsync, hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
+import { saveRoomSettings } from '../../../channel-settings/server/methods/saveRoomSettings';
+import { mountIntegrationQueryBasedOnPermissions } from '../../../integrations/server/lib/mountQueriesBasedOnPermission';
+import { createPrivateGroupMethod } from '../../../lib/server/methods/createPrivateGroup';
+import { leaveRoomMethod } from '../../../lib/server/methods/leaveRoom';
 import { normalizeMessagesForUser } from '../../../utils/server/lib/normalizeMessagesForUser';
+import { API } from '../api';
+import { addUserToFileObj } from '../helpers/addUserToFileObj';
+import { composeRoomWithLastMessage } from '../helpers/composeRoomWithLastMessage';
 import { getLoggedInUser } from '../helpers/getLoggedInUser';
 import { getPaginationItems } from '../helpers/getPaginationItems';
+import { getUserFromParams, getUserListFromParams } from '../helpers/getUserFromParams';
+
+async function getRoomFromParams(params: { roomId?: string } | { roomName?: string }): Promise<IRoom> {
+	if (
+		(!('roomId' in params) && !('roomName' in params)) ||
+		('roomId' in params && !(params as { roomId?: string }).roomId && 'roomName' in params && !(params as { roomName?: string }).roomName)
+	) {
+		throw new Meteor.Error('error-room-param-not-provided', 'The parameter "roomId" or "roomName" is required');
+	}
+
+	const roomOptions = {
+		projection: {
+			...roomAccessAttributes,
+			t: 1,
+			ro: 1,
+			name: 1,
+			fname: 1,
+			prid: 1,
+			archived: 1,
+			broadcast: 1,
+		},
+	};
+
+	const room = await (() => {
+		if ('roomId' in params) {
+			return Rooms.findOneById(params.roomId || '', roomOptions);
+		}
+		if ('roomName' in params) {
+			return Rooms.findOneByName(params.roomName || '', roomOptions);
+		}
+	})();
+
+	if (!room || room.t !== 'p') {
+		throw new Meteor.Error('error-room-not-found', 'The required "roomId" or "roomName" param provided does not match any group');
+	}
+
+	return room;
+}
+
 // Returns the private group subscription IF found otherwise it will return the failure of why it didn't. Check the `statusCode` property
 async function findPrivateGroupByIdOrName({
 	params,
@@ -44,35 +85,7 @@ async function findPrivateGroupByIdOrName({
 	name: string;
 	broadcast: boolean;
 }> {
-	if (
-		(!('roomId' in params) && !('roomName' in params)) ||
-		('roomId' in params && !(params as { roomId?: string }).roomId && 'roomName' in params && !(params as { roomName?: string }).roomName)
-	) {
-		throw new Meteor.Error('error-room-param-not-provided', 'The parameter "roomId" or "roomName" is required');
-	}
-
-	const roomOptions = {
-		projection: {
-			...roomAccessAttributes,
-			t: 1,
-			ro: 1,
-			name: 1,
-			fname: 1,
-			prid: 1,
-			archived: 1,
-			broadcast: 1,
-		},
-	};
-	let room;
-	if ('roomId' in params) {
-		room = await Rooms.findOneById(params.roomId || '', roomOptions);
-	} else if ('roomName' in params) {
-		room = await Rooms.findOneByName(params.roomName || '', roomOptions);
-	}
-
-	if (!room || room.t !== 'p') {
-		throw new Meteor.Error('error-room-not-found', 'The required "roomId" or "roomName" param provided does not match any group');
-	}
+	const room = await getRoomFromParams(params);
 
 	const user = await Users.findOneById(userId, { projections: { username: 1 } });
 
@@ -92,10 +105,10 @@ async function findPrivateGroupByIdOrName({
 	return {
 		rid: room._id,
 		open: Boolean(sub?.open),
-		ro: room.ro,
+		ro: Boolean(room.ro),
 		t: room.t,
-		name: roomName,
-		broadcast: room.broadcast,
+		name: roomName ?? '',
+		broadcast: Boolean(room.broadcast),
 	};
 }
 
@@ -110,7 +123,7 @@ API.v1.addRoute(
 				userId: this.userId,
 			});
 
-			await Meteor.callAsync('addAllUserToRoom', findResult.rid, this.bodyParams.activeUsersOnly);
+			await addAllUserToRoomFn(this.userId, findResult.rid, activeUsersOnly === 'true' || activeUsersOnly === 1);
 
 			const room = await Rooms.findOneById(findResult.rid, { projection: API.v1.defaultFieldsToExclude });
 
@@ -214,7 +227,7 @@ API.v1.addRoute(
 				return API.v1.failure(`The private group, ${findResult.name}, is already closed to the sender`);
 			}
 
-			await Meteor.callAsync('hideRoom', findResult.rid);
+			await hideRoomMethod(this.userId, findResult.rid);
 
 			return API.v1.success();
 		},
@@ -258,7 +271,7 @@ API.v1.addRoute(
 
 			if (params.userId) {
 				if (!access) {
-					return API.v1.unauthorized();
+					return API.v1.forbidden();
 				}
 				user = params.userId;
 			}
@@ -297,10 +310,6 @@ API.v1.addRoute(
 	{ authRequired: true },
 	{
 		async post() {
-			if (!(await hasPermissionAsync(this.userId, 'create-p'))) {
-				return API.v1.unauthorized();
-			}
-
 			if (!this.bodyParams.name) {
 				return API.v1.failure('Body param "name" is required');
 			}
@@ -318,24 +327,31 @@ API.v1.addRoute(
 
 			const readOnly = typeof this.bodyParams.readOnly !== 'undefined' ? this.bodyParams.readOnly : false;
 
-			const result = await Meteor.callAsync(
-				'createPrivateGroup',
-				this.bodyParams.name,
-				this.bodyParams.members ? this.bodyParams.members : [],
-				readOnly,
-				this.bodyParams.customFields,
-				this.bodyParams.extraData,
-			);
+			try {
+				const result = await createPrivateGroupMethod(
+					this.user,
+					this.bodyParams.name,
+					this.bodyParams.members ? this.bodyParams.members : [],
+					readOnly,
+					this.bodyParams.customFields,
+					this.bodyParams.extraData,
+					this.bodyParams.excludeSelf ?? false,
+				);
 
-			const room = await Rooms.findOneById(result.rid, { projection: API.v1.defaultFieldsToExclude });
+				const room = await Rooms.findOneById(result.rid, { projection: API.v1.defaultFieldsToExclude });
+				if (!room) {
+					throw new Meteor.Error('error-room-not-found', 'The required "roomId" or "roomName" param provided does not match any group');
+				}
 
-			if (!room) {
-				throw new Meteor.Error('error-room-not-found', 'The required "roomId" or "roomName" param provided does not match any group');
+				return API.v1.success({
+					group: await composeRoomWithLastMessage(room, this.userId),
+				});
+			} catch (error: unknown) {
+				if (isMeteorError(error) && error.reason === 'error-not-allowed') {
+					return API.v1.forbidden();
+				}
+				throw error;
 			}
-
-			return API.v1.success({
-				group: await composeRoomWithLastMessage(room, this.userId),
-			});
 		},
 	},
 );
@@ -351,7 +367,7 @@ API.v1.addRoute(
 				checkedArchived: false,
 			});
 
-			await Meteor.callAsync('eraseRoom', findResult.rid);
+			await eraseRoom(findResult.rid, this.userId);
 
 			return API.v1.success();
 		},
@@ -395,20 +411,22 @@ API.v1.addRoute(
 
 API.v1.addRoute(
 	'groups.getIntegrations',
-	{ authRequired: true },
 	{
-		async get() {
-			if (
-				!(await hasAtLeastOnePermissionAsync(this.userId, [
+		authRequired: true,
+		permissionsRequired: {
+			GET: {
+				permissions: [
 					'manage-outgoing-integrations',
 					'manage-own-outgoing-integrations',
 					'manage-incoming-integrations',
 					'manage-own-incoming-integrations',
-				]))
-			) {
-				return API.v1.unauthorized();
-			}
-
+				],
+				operation: 'hasAny',
+			},
+		},
+	},
+	{
+		async get() {
 			const findResult = await findPrivateGroupByIdOrName({
 				params: this.queryParams,
 				userId: this.userId,
@@ -499,7 +517,7 @@ API.v1.addRoute(
 			});
 
 			if (!result) {
-				return API.v1.unauthorized();
+				return API.v1.forbidden();
 			}
 
 			return API.v1.success(result);
@@ -576,14 +594,14 @@ API.v1.addRoute(
 	{ authRequired: true },
 	{
 		async post() {
-			const findResult = await findPrivateGroupByIdOrName({
-				params: this.bodyParams,
-				userId: this.userId,
-			});
+			const room = await getRoomFromParams(this.bodyParams);
 
 			const user = await getUserFromParams(this.bodyParams);
+			if (!user?.username) {
+				return API.v1.failure('Invalid user');
+			}
 
-			await Meteor.callAsync('removeUserFromRoom', { rid: findResult.rid, username: user.username });
+			await removeUserFromRoomMethod(this.userId, { rid: room._id, username: user.username });
 
 			return API.v1.success();
 		},
@@ -600,7 +618,11 @@ API.v1.addRoute(
 				userId: this.userId,
 			});
 
-			await Meteor.callAsync('leaveRoom', findResult.rid);
+			const user = await Users.findOneById(this.userId);
+			if (!user) {
+				return API.v1.failure('Invalid user');
+			}
+			await leaveRoomMethod(user, findResult.rid);
 
 			return API.v1.success();
 		},
@@ -620,7 +642,12 @@ API.v1.addRoute(
 			const rids = subs.map(({ rid }) => rid).filter(Boolean);
 
 			if (rids.length === 0) {
-				return API.v1.notFound();
+				return API.v1.success({
+					groups: [],
+					offset,
+					count: 0,
+					total: 0,
+				});
 			}
 
 			const { cursor, totalCount } = await Rooms.findPaginatedByTypeAndIds('p', rids, {
@@ -644,12 +671,9 @@ API.v1.addRoute(
 
 API.v1.addRoute(
 	'groups.listAll',
-	{ authRequired: true },
+	{ authRequired: true, permissionsRequired: ['view-room-administration'] },
 	{
 		async get() {
-			if (!(await hasPermissionAsync(this.userId, 'view-room-administration'))) {
-				return API.v1.unauthorized();
-			}
 			const { offset, count } = await getPaginationItems(this.queryParams);
 			const { sort, fields, query } = await this.parseJsonQuery();
 			const ourQuery = Object.assign({}, query, { t: 'p' as RoomType });
@@ -684,7 +708,7 @@ API.v1.addRoute(
 			});
 
 			if (findResult.broadcast && !(await hasPermissionAsync(this.userId, 'view-broadcast-member-list', findResult.rid))) {
-				return API.v1.unauthorized();
+				return API.v1.forbidden();
 			}
 
 			const { offset: skip, count: limit } = await getPaginationItems(this.queryParams);
@@ -706,10 +730,7 @@ API.v1.addRoute(
 				skip,
 				limit,
 				filter,
-				sort: {
-					_updatedAt: -1,
-					...(sort?.username && { username: sort.username }),
-				},
+				...(sort?.username && { sort: { username: sort.username } }),
 			});
 
 			const [members, total] = await Promise.all([cursor.toArray(), totalCount]);
@@ -726,19 +747,30 @@ API.v1.addRoute(
 
 API.v1.addRoute(
 	'groups.messages',
-	{ authRequired: true },
+	{ authRequired: true, validateParams: isGroupsMessagesProps },
 	{
 		async get() {
+			const { roomId, mentionIds, starredIds, pinned } = this.queryParams;
+
 			const findResult = await findPrivateGroupByIdOrName({
-				params: this.queryParams,
+				params: { roomId },
 				userId: this.userId,
 			});
 			const { offset, count } = await getPaginationItems(this.queryParams);
 			const { sort, fields, query } = await this.parseJsonQuery();
 
-			const ourQuery = Object.assign({}, query, { rid: findResult.rid });
+			const parseIds = (ids: string | undefined, field: string) =>
+				typeof ids === 'string' && ids ? { [field]: { $in: ids.split(',').map((id) => id.trim()) } } : {};
 
-			const { cursor, totalCount } = await Messages.findPaginated(ourQuery, {
+			const ourQuery = {
+				...query,
+				rid: findResult.rid,
+				...parseIds(mentionIds, 'mentions._id'),
+				...parseIds(starredIds, 'starred._id'),
+				...(pinned && pinned.toLowerCase() === 'true' ? { pinned: true } : {}),
+			};
+
+			const { cursor, totalCount } = Messages.findPaginated(ourQuery, {
 				sort: sort || { ts: -1 },
 				skip: offset,
 				limit: count,
@@ -760,23 +792,28 @@ API.v1.addRoute(
 // TODO: CACHE: same as channels.online
 API.v1.addRoute(
 	'groups.online',
-	{ authRequired: true },
+	{ authRequired: true, validateParams: isGroupsOnlineProps },
 	{
 		async get() {
 			const { query } = await this.parseJsonQuery();
-			if (!query || Object.keys(query).length === 0) {
+			const { _id } = this.queryParams;
+
+			if ((!query || Object.keys(query).length === 0) && !_id) {
 				return API.v1.failure('Invalid query');
 			}
 
-			const ourQuery = Object.assign({}, query, { t: 'p' });
+			const filter = {
+				...query,
+				...(_id ? { _id } : {}),
+				t: 'p',
+			};
 
-			const room = await Rooms.findOne(ourQuery as Record<string, any>);
-
+			const room = await Rooms.findOne(filter as Record<string, any>);
 			if (!room) {
 				return API.v1.failure('Group does not exists');
 			}
-			const user = await getLoggedInUser(this.request);
 
+			const user = await getLoggedInUser(this.request);
 			if (!user) {
 				return API.v1.failure('User does not exists');
 			}
@@ -785,11 +822,11 @@ API.v1.addRoute(
 				throw new Meteor.Error('error-not-allowed', 'Not Allowed');
 			}
 
-			const online: Pick<IUser, '_id' | 'username'>[] = await UsersSync.findUsersNotOffline({
-				fields: {
+			const online: Pick<IUser, '_id' | 'username'>[] = await Users.findUsersNotOffline({
+				projection: {
 					username: 1,
 				},
-			}).fetch();
+			}).toArray();
 
 			const onlineInRoom = await Promise.all(
 				online.map(async (user) => {
@@ -905,7 +942,7 @@ API.v1.addRoute(
 				userId: this.userId,
 			});
 
-			await Meteor.callAsync('saveRoomSettings', findResult.rid, 'roomName', this.bodyParams.name);
+			await saveRoomSettings(this.userId, findResult.rid, 'roomName', this.bodyParams.name);
 
 			const room = await Rooms.findOneById(findResult.rid, { projection: API.v1.defaultFieldsToExclude });
 
@@ -934,7 +971,7 @@ API.v1.addRoute(
 				userId: this.userId,
 			});
 
-			await Meteor.callAsync('saveRoomSettings', findResult.rid, 'roomCustomFields', this.bodyParams.customFields);
+			await saveRoomSettings(this.userId, findResult.rid, 'roomCustomFields', this.bodyParams.customFields);
 
 			const room = await Rooms.findOneById(findResult.rid, { projection: API.v1.defaultFieldsToExclude });
 
@@ -963,7 +1000,7 @@ API.v1.addRoute(
 				userId: this.userId,
 			});
 
-			await Meteor.callAsync('saveRoomSettings', findResult.rid, 'roomDescription', this.bodyParams.description);
+			await saveRoomSettings(this.userId, findResult.rid, 'roomDescription', this.bodyParams.description || '');
 
 			return API.v1.success({
 				description: this.bodyParams.description || '',
@@ -986,7 +1023,7 @@ API.v1.addRoute(
 				userId: this.userId,
 			});
 
-			await Meteor.callAsync('saveRoomSettings', findResult.rid, 'roomDescription', this.bodyParams.purpose);
+			await saveRoomSettings(this.userId, findResult.rid, 'roomDescription', this.bodyParams.purpose || '');
 
 			return API.v1.success({
 				purpose: this.bodyParams.purpose || '',
@@ -1013,7 +1050,7 @@ API.v1.addRoute(
 				return API.v1.failure('The private group read only setting is the same as what it would be changed to.');
 			}
 
-			await Meteor.callAsync('saveRoomSettings', findResult.rid, 'readOnly', this.bodyParams.readOnly);
+			await saveRoomSettings(this.userId, findResult.rid, 'readOnly', this.bodyParams.readOnly);
 
 			const room = await Rooms.findOneById(findResult.rid, { projection: API.v1.defaultFieldsToExclude });
 
@@ -1042,7 +1079,7 @@ API.v1.addRoute(
 				userId: this.userId,
 			});
 
-			await Meteor.callAsync('saveRoomSettings', findResult.rid, 'roomTopic', this.bodyParams.topic);
+			await saveRoomSettings(this.userId, findResult.rid, 'roomTopic', this.bodyParams.topic || '');
 
 			return API.v1.success({
 				topic: this.bodyParams.topic || '',
@@ -1069,7 +1106,7 @@ API.v1.addRoute(
 				return API.v1.failure('The private group type is the same as what it would be changed to.');
 			}
 
-			await Meteor.callAsync('saveRoomSettings', findResult.rid, 'roomType', this.bodyParams.type);
+			await saveRoomSettings(this.userId, findResult.rid, 'roomType', this.bodyParams.type as RoomType);
 
 			const room = await Rooms.findOneById(findResult.rid, { projection: API.v1.defaultFieldsToExclude });
 
@@ -1098,7 +1135,7 @@ API.v1.addRoute(
 				userId: this.userId,
 			});
 
-			await Meteor.callAsync('saveRoomSettings', findResult.rid, 'roomAnnouncement', this.bodyParams.announcement);
+			await saveRoomSettings(this.userId, findResult.rid, 'roomAnnouncement', this.bodyParams.announcement || '');
 
 			return API.v1.success({
 				announcement: this.bodyParams.announcement || '',
@@ -1182,7 +1219,7 @@ API.v1.addRoute(
 				userId: this.userId,
 			});
 
-			await Meteor.callAsync('saveRoomSettings', findResult.rid, 'encrypted', encrypted);
+			await saveRoomSettings(this.userId, findResult.rid, 'encrypted', encrypted);
 
 			const room = await Rooms.findOneById(findResult.rid, { projection: API.v1.defaultFieldsToExclude });
 
@@ -1216,7 +1253,7 @@ API.v1.addRoute(
 			}
 
 			if (!(await hasAllPermissionAsync(this.userId, ['create-team', 'edit-room'], room.rid))) {
-				return API.v1.unauthorized();
+				return API.v1.forbidden();
 			}
 
 			const subscriptions = await Subscriptions.findByRoomId(room.rid, {

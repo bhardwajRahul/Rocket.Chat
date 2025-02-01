@@ -1,8 +1,8 @@
 import type { IRoom } from '@rocket.chat/core-typings';
 import { Skeleton } from '@rocket.chat/fuselage';
-import { useMutableCallback } from '@rocket.chat/fuselage-hooks';
-import { useTranslation } from '@rocket.chat/ui-contexts';
+import { useEffectEvent } from '@rocket.chat/fuselage-hooks';
 import {
+	useVideoConfSetPreferences,
 	VideoConfPopup,
 	VideoConfPopupContent,
 	VideoConfPopupControllers,
@@ -15,12 +15,12 @@ import {
 	VideoConfPopupHeader,
 } from '@rocket.chat/ui-video-conf';
 import type { ReactElement } from 'react';
-import React, { useMemo } from 'react';
+import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 
-import { useVideoConfSetPreferences } from '../../../../../../contexts/VideoConfContext';
+import VideoConfPopupRoomInfo from './VideoConfPopupRoomInfo';
 import { AsyncStatePhase } from '../../../../../../hooks/useAsyncState';
 import { useEndpointData } from '../../../../../../hooks/useEndpointData';
-import VideoConfPopupRoomInfo from './VideoConfPopupRoomInfo';
 
 type IncomingPopupProps = {
 	id: string;
@@ -32,7 +32,7 @@ type IncomingPopupProps = {
 };
 
 const IncomingPopup = ({ id, room, position, onClose, onMute, onConfirm }: IncomingPopupProps): ReactElement => {
-	const t = useTranslation();
+	const { t } = useTranslation();
 	const { controllersConfig, handleToggleMic, handleToggleCam } = useVideoConfControllers();
 	const setPreferences = useVideoConfSetPreferences();
 
@@ -41,7 +41,7 @@ const IncomingPopup = ({ id, room, position, onClose, onMute, onConfirm }: Incom
 	const showMic = Boolean(value?.capabilities?.mic);
 	const showCam = Boolean(value?.capabilities?.cam);
 
-	const handleJoinCall = useMutableCallback(() => {
+	const handleJoinCall = useEffectEvent(() => {
 		setPreferences(controllersConfig);
 		onConfirm();
 	});

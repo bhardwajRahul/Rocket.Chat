@@ -1,36 +1,38 @@
 import crypto from 'crypto';
 
-import { Meteor } from 'meteor/meteor';
-import { check } from 'meteor/check';
-import { TAPi18n } from 'meteor/rocketchat:tap-i18n';
-import { EJSON } from 'meteor/ejson';
-import { DDPRateLimiter } from 'meteor/ddp-rate-limiter';
-import { escapeHTML } from '@rocket.chat/string-helpers';
+import { isOAuthUser, type IUser } from '@rocket.chat/core-typings';
+import { Settings, Users, WorkspaceCredentials } from '@rocket.chat/models';
 import {
 	isShieldSvgProps,
 	isSpotlightProps,
 	isDirectoryProps,
 	isMethodCallProps,
 	isMethodCallAnonProps,
+	isFingerprintProps,
 	isMeteorCall,
-	validateParamsPwGetPolicyRest,
 } from '@rocket.chat/rest-typings';
-import type { IUser } from '@rocket.chat/core-typings';
-import { Users as UsersRaw } from '@rocket.chat/models';
+import { escapeHTML } from '@rocket.chat/string-helpers';
+import EJSON from 'ejson';
+import { check } from 'meteor/check';
+import { DDPRateLimiter } from 'meteor/ddp-rate-limiter';
+import { Meteor } from 'meteor/meteor';
+import { v4 as uuidv4 } from 'uuid';
 
-import { hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
-import { Users } from '../../../models/server';
-import { settings } from '../../../settings/server';
-import { API } from '../api';
-import { getDefaultUserFields } from '../../../utils/server/functions/getDefaultUserFields';
-import { getURL } from '../../../utils/lib/getURL';
-import { getLogs } from '../../../../server/stream/stdout';
+import { i18n } from '../../../../server/lib/i18n';
 import { SystemLogger } from '../../../../server/lib/logger/system';
+import { resetAuditedSettingByUser, updateAuditedByUser } from '../../../../server/settings/lib/auditedSettingUpdates';
+import { getLogs } from '../../../../server/stream/stdout';
 import { passwordPolicy } from '../../../lib/server';
+import { notifyOnSettingChangedById } from '../../../lib/server/lib/notifyListener';
+import { settings } from '../../../settings/server';
+import { getBaseUserFields } from '../../../utils/server/functions/getBaseUserFields';
+import { isSMTPConfigured } from '../../../utils/server/functions/isSMTPConfigured';
+import { getURL } from '../../../utils/server/getURL';
+import { API } from '../api';
 import { getLoggedInUser } from '../helpers/getLoggedInUser';
-import { getUserInfo } from '../helpers/getUserInfo';
 import { getPaginationItems } from '../helpers/getPaginationItems';
 import { getUserFromParams } from '../helpers/getUserFromParams';
+import { getUserInfo } from '../helpers/getUserInfo';
 
 /**
  * @openapi
@@ -173,19 +175,23 @@ API.v1.addRoute(
 	{ authRequired: true },
 	{
 		async get() {
-			const fields = getDefaultUserFields();
-			const { services, ...user } = Users.findOneById(this.userId, { fields }) as IUser;
+			const userFields = { ...getBaseUserFields(), services: 1 };
+			const { services, ...user } = (await Users.findOneById(this.userId, { projection: userFields })) as IUser;
 
 			return API.v1.success(
 				await getUserInfo({
 					...user,
+					isOAuthUser: isOAuthUser({ ...user, services }),
 					...(services && {
 						services: {
-							...services,
+							...(services.github && { github: services.github }),
+							...(services.gitlab && { gitlab: services.gitlab }),
+							...(services.email2fa?.enabled && { email2fa: { enabled: services.email2fa.enabled } }),
+							...(services.totp?.enabled && { totp: { enabled: services.totp.enabled } }),
 							password: {
 								// The password hash shouldn't be leaked but the client may need to know if it exists.
 								exists: Boolean(services?.password?.bcrypt),
-							} as any,
+							},
 						},
 					}),
 				}),
@@ -232,7 +238,7 @@ API.v1.addRoute(
 				});
 			}
 			const hideIcon = icon === 'false';
-			if (hideIcon && (!name || !name.trim())) {
+			if (hideIcon && !name?.trim()) {
 				return API.v1.failure('Name cannot be empty when icon is hidden');
 			}
 
@@ -241,11 +247,11 @@ API.v1.addRoute(
 			switch (type) {
 				case 'online':
 					if (Date.now() - onlineCacheDate > cacheInvalid) {
-						onlineCache = Users.findUsersNotOffline().count();
+						onlineCache = await Users.countUsersNotOffline();
 						onlineCacheDate = Date.now();
 					}
 
-					text = `${onlineCache} ${TAPi18n.__('Online')}`;
+					text = `${onlineCache} ${i18n.t('Online')}`;
 					break;
 				case 'channel':
 					if (!channel) {
@@ -282,7 +288,7 @@ API.v1.addRoute(
 					}
 					break;
 				default:
-					text = TAPi18n.__('Join_Chat').toUpperCase();
+					text = i18n.t('Join_Chat').toUpperCase();
 			}
 
 			const iconSize = hideIcon ? 7 : 24;
@@ -358,8 +364,14 @@ API.v1.addRoute(
 		async get() {
 			const { offset, count } = await getPaginationItems(this.queryParams);
 			const { sort, query } = await this.parseJsonQuery();
+			const { text, type, workspace = 'local' } = this.queryParams;
 
-			const { text, type, workspace = 'local' } = query;
+			const filter = {
+				...(query ? { ...query } : {}),
+				...(text ? { text } : {}),
+				...(type ? { type } : {}),
+				...(workspace ? { workspace } : {}),
+			};
 
 			if (sort && Object.keys(sort).length > 1) {
 				return API.v1.failure('This method support only one "sort" parameter');
@@ -368,9 +380,7 @@ API.v1.addRoute(
 			const sortDirection = sort && Object.values(sort)[0] === 1 ? 'asc' : 'desc';
 
 			const result = await Meteor.callAsync('browseChannels', {
-				text,
-				type,
-				workspace,
+				...filter,
 				sortBy,
 				sortDirection,
 				offset: Math.max(0, offset),
@@ -393,36 +403,10 @@ API.v1.addRoute(
 API.v1.addRoute(
 	'pw.getPolicy',
 	{
-		authRequired: true,
+		authRequired: false,
 	},
 	{
 		get() {
-			return API.v1.success(passwordPolicy.getPasswordPolicy());
-		},
-	},
-);
-
-API.v1.addRoute(
-	'pw.getPolicyReset',
-	{
-		authRequired: false,
-		validateParams: validateParamsPwGetPolicyRest,
-	},
-	{
-		async get() {
-			check(
-				this.queryParams,
-				Match.ObjectIncluding({
-					token: String,
-				}),
-			);
-			const { token } = this.queryParams;
-
-			const user = await UsersRaw.findOneByResetToken(token, { projection: { _id: 1 } });
-			if (!user) {
-				return API.v1.unauthorized();
-			}
-
 			return API.v1.success(passwordPolicy.getPasswordPolicy());
 		},
 	},
@@ -466,12 +450,9 @@ API.v1.addRoute(
  */
 API.v1.addRoute(
 	'stdout.queue',
-	{ authRequired: true },
+	{ authRequired: true, permissionsRequired: ['view-logs'] },
 	{
 		async get() {
-			if (!(await hasPermissionAsync(this.userId, 'view-logs'))) {
-				return API.v1.unauthorized();
-			}
 			return API.v1.success({ queue: getLogs() });
 		},
 	},
@@ -535,7 +516,7 @@ API.v1.addRoute(
 				this.token ||
 				crypto
 					.createHash('md5')
-					.update(this.requestIp + this.request.headers['user-agent'])
+					.update(this.requestIp + this.user._id)
 					.digest('hex');
 
 			const rateLimiterInput = {
@@ -558,7 +539,9 @@ API.v1.addRoute(
 				const result = await Meteor.callAsync(method, ...params);
 				return API.v1.success(mountResult({ id, result }));
 			} catch (err) {
-				SystemLogger.error({ msg: `Exception while invoking method ${method}`, err });
+				if (!(err as any).isClientSafe && !(err as any).meteorError) {
+					SystemLogger.error({ msg: `Exception while invoking method ${method}`, err });
+				}
 
 				if (settings.get('Log_Level') === '2') {
 					Meteor._debug(`Exception while invoking method ${method}`, err);
@@ -589,12 +572,7 @@ API.v1.addRoute(
 
 			const { method, params, id } = data;
 
-			const connectionId =
-				this.token ||
-				crypto
-					.createHash('md5')
-					.update(this.requestIp + this.request.headers['user-agent'])
-					.digest('hex');
+			const connectionId = this.token || crypto.createHash('md5').update(this.requestIp).digest('hex');
 
 			const rateLimiterInput = {
 				userId: this.userId || undefined,
@@ -606,6 +584,7 @@ API.v1.addRoute(
 
 			try {
 				DDPRateLimiter._increment(rateLimiterInput);
+
 				const rateLimitResult = DDPRateLimiter._check(rateLimiterInput);
 				if (!rateLimitResult.allowed) {
 					throw new Meteor.Error('too-many-requests', DDPRateLimiter.getErrorMessage(rateLimitResult), {
@@ -616,13 +595,130 @@ API.v1.addRoute(
 				const result = await Meteor.callAsync(method, ...params);
 				return API.v1.success(mountResult({ id, result }));
 			} catch (err) {
-				SystemLogger.error({ msg: `Exception while invoking method ${method}`, err });
-
+				if (!(err as any).isClientSafe && !(err as any).meteorError) {
+					SystemLogger.error({ msg: `Exception while invoking method ${method}`, err });
+				}
 				if (settings.get('Log_Level') === '2') {
 					Meteor._debug(`Exception while invoking method ${method}`, err);
 				}
 				return API.v1.success(mountResult({ id, error: err }));
 			}
+		},
+	},
+);
+
+API.v1.addRoute(
+	'smtp.check',
+	{ authRequired: true },
+	{
+		async get() {
+			return API.v1.success({ isSMTPConfigured: isSMTPConfigured() });
+		},
+	},
+);
+
+/**
+ * @openapi
+ *  /api/v1/fingerprint:
+ *    post:
+ *      description: Update Fingerprint definition as a new workspace or update of configuration
+ *      security:
+ *        $ref: '#/security/authenticated'
+ *      requestBody:
+ *        content:
+ *          application/json:
+ *            schema:
+ *              type: object
+ *              properties:
+ *                setDeploymentAs:
+ *                  type: string
+ *            example: |
+ *              {
+ *                 "setDeploymentAs": "new-workspace"
+ *              }
+ *      responses:
+ *        200:
+ *          description: Workspace successfully configured
+ *          content:
+ *            application/json:
+ *              schema:
+ *                $ref: '#/components/schemas/ApiSuccessV1'
+ *        default:
+ *          description: Unexpected error
+ *          content:
+ *            application/json:
+ *              schema:
+ *                $ref: '#/components/schemas/ApiFailureV1'
+ */
+API.v1.addRoute(
+	'fingerprint',
+	{
+		authRequired: true,
+		validateParams: isFingerprintProps,
+	},
+	{
+		async post() {
+			check(this.bodyParams, {
+				setDeploymentAs: String,
+			});
+
+			const settingsIds: string[] = [];
+
+			if (this.bodyParams.setDeploymentAs === 'new-workspace') {
+				await WorkspaceCredentials.removeAllCredentials();
+
+				settingsIds.push(
+					'Cloud_Service_Agree_PrivacyTerms',
+					'Cloud_Workspace_Id',
+					'Cloud_Workspace_Name',
+					'Cloud_Workspace_Client_Id',
+					'Cloud_Workspace_Client_Secret',
+					'Cloud_Workspace_Client_Secret_Expires_At',
+					'Cloud_Workspace_Registration_Client_Uri',
+					'Cloud_Workspace_PublicKey',
+					'Cloud_Workspace_License',
+					'Cloud_Workspace_Had_Trial',
+					'uniqueID',
+				);
+			}
+
+			settingsIds.push('Deployment_FingerPrint_Verified');
+
+			const auditSettingOperation = updateAuditedByUser({
+				_id: this.userId,
+				username: this.user.username!,
+				ip: this.requestIp,
+				useragent: this.request.headers['user-agent'] || '',
+			});
+
+			const promises = settingsIds.map((settingId) => {
+				if (settingId === 'uniqueID') {
+					return auditSettingOperation(Settings.resetValueById, 'uniqueID', process.env.DEPLOYMENT_ID || uuidv4());
+				}
+
+				if (settingId === 'Cloud_Workspace_Access_Token_Expires_At') {
+					return auditSettingOperation(Settings.resetValueById, 'Cloud_Workspace_Access_Token_Expires_At', new Date(0));
+				}
+
+				if (settingId === 'Deployment_FingerPrint_Verified') {
+					return auditSettingOperation(Settings.updateValueById, 'Deployment_FingerPrint_Verified', true);
+				}
+
+				return resetAuditedSettingByUser({
+					_id: this.userId,
+					username: this.user.username!,
+					ip: this.requestIp,
+					useragent: this.request.headers['user-agent'] || '',
+				})(Settings.resetValueById, settingId);
+			});
+
+			(await Promise.all(promises)).forEach((value, index) => {
+				if (value?.modifiedCount) {
+					void notifyOnSettingChangedById(settingsIds[index]);
+				}
+			});
+
+			return API.v1.success({});
 		},
 	},
 );

@@ -1,14 +1,19 @@
-import { Meteor } from 'meteor/meteor';
-import { Match, check } from 'meteor/check';
-import { Settings } from '@rocket.chat/models';
 import type { ISetting } from '@rocket.chat/core-typings';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
+import { isSettingCode } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Settings } from '@rocket.chat/models';
+import { Match, check } from 'meteor/check';
+import { Meteor } from 'meteor/meteor';
 
-import { hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
-import { getSettingPermissionId } from '../../../authorization/lib';
+import { updateAuditedByUser } from '../../../../server/settings/lib/auditedSettingUpdates';
 import { twoFactorRequired } from '../../../2fa/server/twoFactorRequired';
+import { getSettingPermissionId } from '../../../authorization/lib';
+import { hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
+import { settings } from '../../../settings/server';
+import { disableCustomScripts } from '../functions/disableCustomScripts';
+import { notifyOnSettingChangedById } from '../lib/notifyListener';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		saveSettings(
@@ -19,6 +24,15 @@ declare module '@rocket.chat/ui-contexts' {
 		): Promise<boolean>;
 	}
 }
+
+const validJSON = Match.Where((value: string) => {
+	try {
+		value === '' || JSON.parse(value);
+		return true;
+	} catch (_) {
+		throw new Meteor.Error('Invalid JSON provided');
+	}
+});
 
 Meteor.methods<ServerMethods>({
 	saveSettings: twoFactorRequired(async function (
@@ -37,11 +51,31 @@ Meteor.methods<ServerMethods>({
 		const editPrivilegedSetting = await hasPermissionAsync(uid, 'edit-privileged-setting');
 		const manageSelectedSettings = await hasPermissionAsync(uid, 'manage-selected-settings');
 
+		// if the id contains Organization_Name then change the Site_Name
+		const orgName = params.find(({ _id }) => _id === 'Organization_Name');
+
+		if (orgName) {
+			// check if the site name is still the default value or ifs the same as organization name
+			const siteName = await Settings.findOneById('Site_Name');
+
+			if (siteName?.value === siteName?.packageValue || siteName?.value === settings.get('Organization_Name')) {
+				params.push({
+					_id: 'Site_Name',
+					value: orgName.value,
+				});
+			}
+		}
+
 		await Promise.all(
 			params.map(async ({ _id, value }) => {
 				// Verify the _id passed in is a string.
 				check(_id, String);
 				if (!editPrivilegedSetting && !(manageSelectedSettings && (await hasPermissionAsync(uid, getSettingPermissionId(_id))))) {
+					return settingsNotAllowed.push(_id);
+				}
+
+				// Disable custom scripts in cloud trials to prevent phishing campaigns
+				if (disableCustomScripts() && /^Custom_Script_/.test(_id)) {
 					return settingsNotAllowed.push(_id);
 				}
 
@@ -54,11 +88,24 @@ Meteor.methods<ServerMethods>({
 					case 'boolean':
 						check(value, Boolean);
 						break;
+					case 'timespan':
 					case 'int':
 						check(value, Number);
+						if (!Number.isInteger(value)) {
+							throw new Meteor.Error(`Invalid setting value ${value}`, 'Invalid setting value', {
+								method: 'saveSettings',
+							});
+						}
+
 						break;
 					case 'multiSelect':
 						check(value, Array);
+						break;
+					case 'code':
+						check(value, String);
+						if (isSettingCode(setting) && setting.code === 'application/json') {
+							check(value, validJSON);
+						}
 						break;
 					default:
 						check(value, String);
@@ -74,7 +121,20 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		await Promise.all(params.map(({ _id, value }) => Settings.updateValueById(_id, value)));
+		const auditSettingOperation = updateAuditedByUser({
+			_id: uid,
+			username: (await Meteor.userAsync())!.username!,
+			ip: this.connection!.clientAddress || '',
+			useragent: this.connection!.httpHeaders['user-agent'] || '',
+		});
+
+		const promises = params.map(({ _id, value }) => auditSettingOperation(Settings.updateValueById, _id, value));
+
+		(await Promise.all(promises)).forEach((value, index) => {
+			if (value?.modifiedCount) {
+				void notifyOnSettingChangedById(params[index]._id);
+			}
+		});
 
 		return true;
 	}, {}),

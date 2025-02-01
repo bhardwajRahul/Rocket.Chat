@@ -1,16 +1,16 @@
-import path, { join } from 'path';
-import { mkdir, mkdtemp } from 'fs/promises';
+import { mkdtemp } from 'fs/promises';
 import { tmpdir } from 'os';
+import path, { join } from 'path';
 
-import { Meteor } from 'meteor/meteor';
-import { ExportOperations, UserDataFiles } from '@rocket.chat/models';
 import type { IExportOperation } from '@rocket.chat/core-typings';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { ExportOperations, UserDataFiles } from '@rocket.chat/models';
+import { Meteor } from 'meteor/meteor';
 
 import { settings } from '../../app/settings/server';
 import * as dataExport from '../lib/dataExport';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		requestDataDownload(params: { fullExport?: boolean }): Promise<{
@@ -34,7 +34,7 @@ Meteor.methods<ServerMethods>({
 
 		const lastOperation = await ExportOperations.findLastOperationByUser(userId, fullExport);
 		const requestDay = lastOperation ? lastOperation.createdAt : new Date();
-		const pendingOperationsBeforeMyRequestCount = await ExportOperations.findAllPendingBeforeMyRequest(requestDay).count();
+		const pendingOperationsBeforeMyRequestCount = await ExportOperations.countAllPendingBeforeMyRequest(requestDay);
 
 		if (lastOperation) {
 			const yesterday = new Date();
@@ -65,7 +65,6 @@ Meteor.methods<ServerMethods>({
 		}
 
 		const tempFolder = settings.get<string | undefined>('UserData_FileSystemPath')?.trim() || (await mkdtemp(join(tmpdir(), 'userData')));
-		await mkdir(tempFolder, { recursive: true });
 
 		const exportOperation = {
 			status: 'preparing',
@@ -81,10 +80,8 @@ Meteor.methods<ServerMethods>({
 		exportOperation._id = id;
 
 		const folderName = path.join(tempFolder, id);
-		await mkdir(folderName, { recursive: true });
 
 		const assetsFolder = path.join(folderName, 'assets');
-		await mkdir(assetsFolder, { recursive: true });
 
 		exportOperation.exportPath = folderName;
 		exportOperation.assetsPath = assetsFolder;

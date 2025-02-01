@@ -1,8 +1,7 @@
 import { render } from '@testing-library/react';
 
-import '@testing-library/jest-dom';
+import { invalidFile, validFile, validMessage, validSystemMessage } from '../ChatTranscript.fixtures';
 import { MessageList } from './MessageList';
-import { invalidFile, validFile, validMessage } from '../ChatTranscript.fixtures';
 
 jest.mock('@react-pdf/renderer', () => ({
 	Image: () => <div>Image</div>,
@@ -36,5 +35,10 @@ describe('components/MessageList', () => {
 		);
 		expect(getByText(validMessage.msg)).toBeInTheDocument();
 		expect(getByText('invalid message')).toBeInTheDocument();
+	});
+
+	it('should render valid system message', () => {
+		const { getByText } = render(<MessageList messages={[{ ...validSystemMessage, files: [] }]} invalidFileMessage='' />);
+		expect(getByText(validSystemMessage.t)).toBeInTheDocument();
 	});
 });

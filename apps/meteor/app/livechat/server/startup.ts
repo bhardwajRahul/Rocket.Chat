@@ -1,33 +1,36 @@
-import { Meteor } from 'meteor/meteor';
-import { Accounts } from 'meteor/accounts-base';
-import { TAPi18n } from 'meteor/rocketchat:tap-i18n';
 import type { IUser } from '@rocket.chat/core-typings';
-import { isOmnichannelRoom } from '@rocket.chat/core-typings';
+import { ILivechatAgentStatus, isOmnichannelRoom } from '@rocket.chat/core-typings';
+import { Logger } from '@rocket.chat/logger';
 import { LivechatRooms } from '@rocket.chat/models';
+import { Accounts } from 'meteor/accounts-base';
+import { Meteor } from 'meteor/meteor';
 
-import { roomCoordinator } from '../../../server/lib/rooms/roomCoordinator';
-import { callbacks } from '../../../lib/callbacks';
-import { settings } from '../../settings/server';
-import { LivechatAgentActivityMonitor } from './statistics/LivechatAgentActivityMonitor';
 import { businessHourManager } from './business-hour';
 import { createDefaultBusinessHourIfNotExists } from './business-hour/Helper';
+import { Livechat as LivechatTyped } from './lib/LivechatTyped';
+import { LivechatAgentActivityMonitor } from './statistics/LivechatAgentActivityMonitor';
+import { callbacks } from '../../../lib/callbacks';
+import { beforeLeaveRoomCallback } from '../../../lib/callbacks/beforeLeaveRoomCallback';
+import { i18n } from '../../../server/lib/i18n';
+import { roomCoordinator } from '../../../server/lib/rooms/roomCoordinator';
+import { maybeMigrateLivechatRoom } from '../../api/server/lib/maybeMigrateLivechatRoom';
 import { hasPermissionAsync } from '../../authorization/server/functions/hasPermission';
-import { Livechat } from './lib/Livechat';
-import { RoutingManager } from './lib/RoutingManager';
-
+import { notifyOnUserChange } from '../../lib/server/lib/notifyListener';
+import { settings } from '../../settings/server';
 import './roomAccessValidator.internalService';
 
-Meteor.startup(async () => {
-	roomCoordinator.setRoomFind('l', (_id) => LivechatRooms.findOneById(_id));
+const logger = new Logger('LivechatStartup');
 
-	callbacks.add(
-		'beforeLeaveRoom',
-		function (user, room) {
+Meteor.startup(async () => {
+	roomCoordinator.setRoomFind('l', async (id) => maybeMigrateLivechatRoom(await LivechatRooms.findOneById(id)));
+
+	beforeLeaveRoomCallback.add(
+		(user, room) => {
 			if (!isOmnichannelRoom(room)) {
-				return user;
+				return;
 			}
 			throw new Meteor.Error(
-				TAPi18n.__('You_cant_leave_a_livechat_room_Please_use_the_close_button', {
+				i18n.t('You_cant_leave_a_livechat_room_Please_use_the_close_button', {
 					lng: user.language || settings.get('Language') || 'en',
 				}),
 			);
@@ -38,7 +41,7 @@ Meteor.startup(async () => {
 
 	callbacks.add(
 		'beforeJoinRoom',
-		async function (user, room) {
+		async (user, room) => {
 			if (isOmnichannelRoom(room) && !(await hasPermissionAsync(user._id, 'view-l-room'))) {
 				throw new Meteor.Error('error-user-is-not-agent', 'User is not an Omnichannel Agent', {
 					method: 'beforeJoinRoom',
@@ -53,31 +56,52 @@ Meteor.startup(async () => {
 
 	const monitor = new LivechatAgentActivityMonitor();
 
-	settings.watch<boolean>('Troubleshoot_Disable_Livechat_Activity_Monitor', (value) => {
+	settings.watch<boolean>('Troubleshoot_Disable_Livechat_Activity_Monitor', async (value) => {
 		if (value) {
 			return monitor.stop();
 		}
 
-		monitor.start();
+		await monitor.start();
 	});
 	await createDefaultBusinessHourIfNotExists();
 
-	settings.watch<boolean>('Livechat_enable_business_hours', async (value) => {
-		if (value) {
-			return businessHourManager.startManager();
-		}
-		return businessHourManager.stopManager();
-	});
-
-	settings.watch<string>('Livechat_Routing_Method', function (value) {
-		RoutingManager.setMethodNameAndStartQueue(value);
-	});
+	settings.watch<boolean>(
+		'Livechat_enable_business_hours',
+		async (value) => {
+			logger.debug(`Starting business hour manager ${value}`);
+			if (value) {
+				await businessHourManager.startManager();
+				return;
+			}
+			await businessHourManager.stopManager();
+		},
+		process.env.TEST_MODE === 'true'
+			? {
+					debounce: 10,
+				}
+			: undefined,
+	);
 
 	// Remove when accounts.onLogout is async
-	Accounts.onLogout(
-		({ user }: { user: IUser }) =>
-			user?.roles?.includes('livechat-agent') &&
-			!user?.roles?.includes('bot') &&
-			Promise.await(Livechat.setUserStatusLivechatIf(user._id, 'not-available', {}, { livechatStatusSystemModified: true })),
-	);
+	Accounts.onLogout(({ user }: { user?: IUser }) => {
+		if (!user?.roles?.includes('livechat-agent') || user?.roles?.includes('bot')) {
+			return;
+		}
+
+		void LivechatTyped.setUserStatusLivechatIf(
+			user._id,
+			ILivechatAgentStatus.NOT_AVAILABLE,
+			{},
+			{ livechatStatusSystemModified: true },
+		).catch();
+
+		void notifyOnUserChange({
+			id: user._id,
+			clientAction: 'updated',
+			diff: {
+				statusLivechat: ILivechatAgentStatus.NOT_AVAILABLE,
+				livechatStatusSystemModified: true,
+			},
+		});
+	});
 });

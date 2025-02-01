@@ -1,5 +1,4 @@
 import { Box } from '@rocket.chat/fuselage';
-import React from 'react';
 
 const CounterItem = ({
 	title = '',
@@ -7,13 +6,13 @@ const CounterItem = ({
 	...props
 }: {
 	title: string | JSX.Element;
-	count: string;
+	count: string | number;
 	flexShrink?: number;
-	pb?: string;
+	pb?: number;
 	flexBasis?: string;
 }) => (
 	<Box display='flex' flexDirection='column' justifyContent='space-between' alignItems='center' flexGrow={1} {...props}>
-		<Box fontScale='h4' textTransform='uppercase' color='hint' textAlign='center' pi='x8'>
+		<Box fontScale='h4' textTransform='uppercase' color='hint' textAlign='center' pi={8}>
 			{title}
 		</Box>
 		<Box fontScale='h2'>{count}</Box>

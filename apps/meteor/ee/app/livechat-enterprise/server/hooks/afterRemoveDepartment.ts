@@ -1,11 +1,13 @@
-import type { ILivechatAgent, ILivechatDepartmentRecord } from '@rocket.chat/core-typings';
-import { LivechatDepartment } from '@rocket.chat/models';
+import type { AtLeast, ILivechatAgent, ILivechatDepartment } from '@rocket.chat/core-typings';
+import { LivechatDepartment, LivechatUnit } from '@rocket.chat/models';
 
 import { callbacks } from '../../../../../lib/callbacks';
 import { cbLogger } from '../lib/logger';
 
-const afterRemoveDepartment = async (options: { department: ILivechatDepartmentRecord; agentsId: ILivechatAgent['_id'][] }) => {
-	cbLogger.debug(`Performing post-department-removal actions in EE: ${options?.department?._id}. Removing department from forward list`);
+const afterRemoveDepartment = async (options: {
+	department: AtLeast<ILivechatDepartment, '_id' | 'businessHourId' | 'parentId'>;
+	agentsId: ILivechatAgent['_id'][];
+}) => {
 	if (!options?.department) {
 		cbLogger.warn('No department found in options', options);
 		return options;
@@ -13,11 +15,14 @@ const afterRemoveDepartment = async (options: { department: ILivechatDepartmentR
 
 	const { department } = options;
 
-	cbLogger.debug(`Removing department from forward list: ${department._id}`);
-	await LivechatDepartment.removeDepartmentFromForwardListById(department._id);
-	cbLogger.debug(`Removed department from forward list: ${department._id}`);
-
-	cbLogger.debug(`Post-department-removal actions completed in EE: ${department._id}`);
+	cbLogger.debug({
+		msg: 'Post removal actions on EE code for department',
+		department,
+	});
+	await Promise.all([
+		LivechatDepartment.removeDepartmentFromForwardListById(department._id),
+		...(department.parentId ? [LivechatUnit.decrementDepartmentsCount(department.parentId)] : []),
+	]);
 
 	return options;
 };

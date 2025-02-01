@@ -1,18 +1,16 @@
-import { callbacks } from '../../../../../lib/callbacks';
 import { settings } from '../../../../../app/settings/server';
+import { callbacks } from '../../../../../lib/callbacks';
 import { debouncedDispatchWaitingQueueStatus } from '../lib/Helper';
 import { cbLogger } from '../lib/logger';
 
 callbacks.add(
 	'livechat.afterTakeInquiry',
-	async (inquiry) => {
+	async ({ inquiry }) => {
 		if (!settings.get('Livechat_waiting_queue')) {
-			cbLogger.debug('Skipping callback. Waiting queue disabled by setting');
 			return inquiry;
 		}
 
 		if (!inquiry) {
-			cbLogger.debug('Skipping callback. No inquiry provided');
 			return null;
 		}
 

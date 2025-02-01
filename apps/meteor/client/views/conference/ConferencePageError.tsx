@@ -1,8 +1,7 @@
 import { States, StatesIcon, StatesTitle, StatesSubtitle, StatesActions, StatesAction } from '@rocket.chat/fuselage';
 import { useTranslation, useUser, useRoute } from '@rocket.chat/ui-contexts';
-import React from 'react';
 
-import Page from '../../components/Page';
+import { Page, PageHeader, PageContent } from '../../components/Page';
 
 const ConferencePageError = () => {
 	const t = useTranslation();
@@ -11,8 +10,8 @@ const ConferencePageError = () => {
 
 	return (
 		<Page background='tint'>
-			<Page.Header title={t('Video_Conference')} />
-			<Page.Content>
+			<PageHeader title={t('Video_Conference')} />
+			<PageContent>
 				<States>
 					<StatesIcon name='circle-exclamation' variation='danger' />
 					<StatesTitle>{t('Call_not_found')}</StatesTitle>
@@ -23,7 +22,7 @@ const ConferencePageError = () => {
 						</StatesActions>
 					)}
 				</States>
-			</Page.Content>
+			</PageContent>
 		</Page>
 	);
 };

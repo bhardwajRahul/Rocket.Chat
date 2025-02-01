@@ -1,6 +1,6 @@
 import { Uploads } from '@rocket.chat/models';
 
-import { transformMappedData } from '../../../../ee/lib/misc/transformMappedData';
+import { transformMappedData } from './transformMappedData';
 
 export class AppUploadsConverter {
 	constructor(orch) {
@@ -40,12 +40,12 @@ export class AppUploadsConverter {
 				delete upload.rid;
 				return result;
 			},
-			user: (upload) => {
+			user: async (upload) => {
 				if (!upload.userId) {
 					return undefined;
 				}
 
-				const result = this.orch.getConverters().get('users').convertById(upload.userId);
+				const result = await this.orch.getConverters().get('users').convertById(upload.userId);
 				delete upload.userId;
 				return result;
 			},

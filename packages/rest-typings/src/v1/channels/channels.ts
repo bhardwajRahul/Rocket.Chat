@@ -1,41 +1,46 @@
-import type { IUpload, IMessage, IRoom, ITeam, IGetRoomRoles, IUser, IIntegration } from '@rocket.chat/core-typings';
+import type { IUploadWithUser, IMessage, IRoom, ITeam, IGetRoomRoles, IUser, IIntegration } from '@rocket.chat/core-typings';
 
-import type { PaginatedRequest } from '../../helpers/PaginatedRequest';
-import type { PaginatedResult } from '../../helpers/PaginatedResult';
 import type { ChannelsAddAllProps } from './ChannelsAddAllProps';
 import type { ChannelsArchiveProps } from './ChannelsArchiveProps';
 import type { ChannelsConvertToTeamProps } from './ChannelsConvertToTeamProps';
 import type { ChannelsCreateProps } from './ChannelsCreateProps';
 import type { ChannelsDeleteProps } from './ChannelsDeleteProps';
+import type { ChannelsFilesListProps } from './ChannelsFilesListProps';
 import type { ChannelsGetAllUserMentionsByChannelProps } from './ChannelsGetAllUserMentionsByChannelProps';
+import type { ChannelsGetIntegrationsProps } from './ChannelsGetIntegrationsProps';
 import type { ChannelsHistoryProps } from './ChannelsHistoryProps';
+import type { ChannelsInviteProps } from './ChannelsInviteProps';
 import type { ChannelsJoinProps } from './ChannelsJoinProps';
 import type { ChannelsKickProps } from './ChannelsKickProps';
 import type { ChannelsLeaveProps } from './ChannelsLeaveProps';
+import type { ChannelsListProps } from './ChannelsListProps';
 import type { ChannelsMessagesProps } from './ChannelsMessagesProps';
 import type { ChannelsModeratorsProps } from './ChannelsModeratorsProps';
+import type { ChannelsOnlineProps } from './ChannelsOnlineProps';
 import type { ChannelsOpenProps } from './ChannelsOpenProps';
+import type { ChannelsRenameProps } from './ChannelsRenameProps';
 import type { ChannelsRolesProps } from './ChannelsRolesProps';
 import type { ChannelsSetAnnouncementProps } from './ChannelsSetAnnouncementProps';
-import type { ChannelsSetReadOnlyProps } from './ChannelsSetReadOnlyProps';
-import type { ChannelsUnarchiveProps } from './ChannelsUnarchiveProps';
-import type { ChannelsGetIntegrationsProps } from './ChannelsGetIntegrationsProps';
-import type { ChannelsListProps } from './ChannelsListProps';
-import type { ChannelsInviteProps } from './ChannelsInviteProps';
-import type { ChannelsOnlineProps } from './ChannelsOnlineProps';
-import type { ChannelsRenameProps } from './ChannelsRenameProps';
 import type { ChannelsSetCustomFieldsProps } from './ChannelsSetCustomFieldsProps';
+import type { ChannelsSetDefaultProps } from './ChannelsSetDefaultProps';
 import type { ChannelsSetDescriptionProps } from './ChannelsSetDescriptionProps';
+import type { ChannelsSetJoinCodeProps } from './ChannelsSetJoinCodeProps';
 import type { ChannelsSetPurposeProps } from './ChannelsSetPurposeProps';
+import type { ChannelsSetReadOnlyProps } from './ChannelsSetReadOnlyProps';
 import type { ChannelsSetTopicProps } from './ChannelsSetTopicProps';
 import type { ChannelsSetTypeProps } from './ChannelsSetTypeProps';
-import type { ChannelsSetDefaultProps } from './ChannelsSetDefaultProps';
-import type { ChannelsSetJoinCodeProps } from './ChannelsSetJoinCodeProps';
+import type { ChannelsUnarchiveProps } from './ChannelsUnarchiveProps';
+import type { PaginatedRequest } from '../../helpers/PaginatedRequest';
+import type { PaginatedResult } from '../../helpers/PaginatedResult';
+
+export * from './ChannelsFilesListProps';
+export * from './ChannelsListProps';
+export * from './ChannelsOnlineProps';
 
 export type ChannelsEndpoints = {
 	'/v1/channels.files': {
-		GET: (params: PaginatedRequest<{ roomId: string } | { roomName: string }>) => PaginatedResult<{
-			files: IUpload[];
+		GET: (params: ChannelsFilesListProps) => PaginatedResult<{
+			files: IUploadWithUser[];
 		}>;
 	};
 	'/v1/channels.members': {

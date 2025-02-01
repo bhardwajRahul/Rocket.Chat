@@ -8,31 +8,31 @@ export class FederationHomeFlextabRoom {
 	}
 
 	get btnEdit(): Locator {
-		return this.page.locator('//aside//button[contains(text(), "Edit")]');
+		return this.page.locator('role=button[name="Edit"]');
 	}
 
 	get btnLeave(): Locator {
-		return this.page.locator('//aside//button[contains(text(), "Leave")]');
+		return this.page.locator('role=button[name="Leave"]');
 	}
 
 	get btnDelete(): Locator {
-		return this.page.locator('//aside//button[contains(text(), "Delete")]');
+		return this.page.locator('role=button[name="Delete"]');
 	}
 
 	get inputName(): Locator {
-		return this.page.locator('//aside//label[contains(text(), "Name")]/..//input');
+		return this.page.getByRole('dialog').getByRole('textbox', { name: 'Name' });
 	}
 
 	get inputTopic(): Locator {
-		return this.page.locator('//main//aside//label[contains(text(), "Topic")]/..//textarea');
+		return this.page.getByRole('dialog').getByRole('textbox', { name: 'Topic' });
 	}
 
 	get inputAnnouncement(): Locator {
-		return this.page.locator('//main//aside//label[contains(text(), "Announcement")]/..//textarea');
+		return this.page.getByRole('dialog').getByRole('textbox', { name: 'Announcement' });
 	}
 
 	get inputDescription(): Locator {
-		return this.page.locator('//main//aside//label[contains(text(), "Description")]/..//textarea');
+		return this.page.getByRole('dialog').getByRole('textbox', { name: 'Description' });
 	}
 
 	get checkboxReadOnly(): Locator {
@@ -40,7 +40,7 @@ export class FederationHomeFlextabRoom {
 	}
 
 	get btnSave(): Locator {
-		return this.page.locator('//aside//button[contains(text(), "Save")]');
+		return this.page.locator('role=button[name="Save"]');
 	}
 
 	get btnModalConfirm(): Locator {

@@ -1,9 +1,10 @@
 import type { IMessage } from '@rocket.chat/core-typings';
-import { isDiscussionMessage, isThreadMainMessage, isE2EEMessage } from '@rocket.chat/core-typings';
+import { isDiscussionMessage, isThreadMainMessage, isE2EEMessage, isQuoteAttachment } from '@rocket.chat/core-typings';
+import { MessageBody } from '@rocket.chat/fuselage';
 import type { TranslationKey } from '@rocket.chat/ui-contexts';
 import { useSetting, useTranslation, useUserId } from '@rocket.chat/ui-contexts';
 import type { ReactElement } from 'react';
-import React, { memo } from 'react';
+import { memo } from 'react';
 
 import { useUserData } from '../../../../hooks/useUserData';
 import type { UserPresence } from '../../../../lib/presence';
@@ -17,11 +18,11 @@ import Location from '../../content/Location';
 import MessageActions from '../../content/MessageActions';
 import Reactions from '../../content/Reactions';
 import ThreadMetrics from '../../content/ThreadMetrics';
-import UiKitSurface from '../../content/UiKitSurface';
 import UrlPreviews from '../../content/UrlPreviews';
 import { useNormalizedMessage } from '../../hooks/useNormalizedMessage';
 import { useOembedLayout } from '../../hooks/useOembedLayout';
 import { useSubscriptionFromMessageQuery } from '../../hooks/useSubscriptionFromMessageQuery';
+import UiKitMessageBlock from '../../uikit/UiKitMessageBlock';
 
 type RoomMessageContentProps = {
 	message: IMessage;
@@ -43,29 +44,36 @@ const RoomMessageContent = ({ message, unread, all, mention, searchText }: RoomM
 	const t = useTranslation();
 
 	const normalizedMessage = useNormalizedMessage(message);
+	const isMessageEncrypted = encrypted && normalizedMessage?.e2e === 'pending';
+
+	const quotes = normalizedMessage?.attachments?.filter(isQuoteAttachment) || [];
+
+	const attachments = normalizedMessage?.attachments?.filter((attachment) => !isQuoteAttachment(attachment)) || [];
 
 	return (
 		<>
+			{isMessageEncrypted && <MessageBody>{t('E2E_message_encrypted_placeholder')}</MessageBody>}
+
+			{!!quotes?.length && <Attachments attachments={quotes} />}
+
 			{!normalizedMessage.blocks?.length && !!normalizedMessage.md?.length && (
 				<>
 					{(!encrypted || normalizedMessage.e2e === 'done') && (
 						<MessageContentBody
+							id={`${normalizedMessage._id}-content`}
 							md={normalizedMessage.md}
 							mentions={normalizedMessage.mentions}
 							channels={normalizedMessage.channels}
 							searchText={searchText}
 						/>
 					)}
-					{encrypted && normalizedMessage.e2e === 'pending' && t('E2E_message_encrypted_placeholder')}
 				</>
 			)}
 
-			{normalizedMessage.blocks && (
-				<UiKitSurface mid={normalizedMessage._id} blocks={normalizedMessage.blocks} appId rid={normalizedMessage.rid} />
-			)}
+			{!!attachments && <Attachments id={message.files?.[0]?._id} attachments={attachments} />}
 
-			{!!normalizedMessage?.attachments?.length && (
-				<Attachments attachments={normalizedMessage.attachments} file={normalizedMessage.file} />
+			{normalizedMessage.blocks && (
+				<UiKitMessageBlock rid={normalizedMessage.rid} mid={normalizedMessage._id} blocks={normalizedMessage.blocks} />
 			)}
 
 			{oembedEnabled && !!normalizedMessage.urls?.length && <UrlPreviews urls={normalizedMessage.urls} />}
@@ -93,7 +101,7 @@ const RoomMessageContent = ({ message, unread, all, mention, searchText }: RoomM
 					unread={unread}
 					mention={mention}
 					all={all}
-					participants={normalizedMessage?.replies?.length}
+					participants={normalizedMessage?.replies}
 				/>
 			)}
 
@@ -112,7 +120,7 @@ const RoomMessageContent = ({ message, unread, all, mention, searchText }: RoomM
 				<BroadcastMetrics username={messageUser.username} message={normalizedMessage} />
 			)}
 
-			{readReceiptEnabled && <ReadReceiptIndicator unread={normalizedMessage.unread} />}
+			{readReceiptEnabled && <ReadReceiptIndicator mid={normalizedMessage._id} unread={normalizedMessage.unread} />}
 		</>
 	);
 };

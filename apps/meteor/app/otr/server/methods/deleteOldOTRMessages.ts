@@ -1,9 +1,9 @@
 import type { IRoom } from '@rocket.chat/core-typings';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Messages, Subscriptions, ReadReceipts } from '@rocket.chat/models';
 import { Meteor } from 'meteor/meteor';
-import { Messages, Subscriptions } from '@rocket.chat/models';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		deleteOldOTRMessages(roomId: IRoom['_id']): Promise<void>;
@@ -28,5 +28,6 @@ Meteor.methods<ServerMethods>({
 		}
 
 		await Messages.deleteOldOTRMessages(roomId, now);
+		await ReadReceipts.removeOTRReceiptsUntilDate(roomId, now);
 	},
 });

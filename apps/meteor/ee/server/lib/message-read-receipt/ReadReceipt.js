@@ -1,8 +1,8 @@
-import { Meteor } from 'meteor/meteor';
+import { api } from '@rocket.chat/core-services';
+import { LivechatVisitors, ReadReceipts, Messages, Rooms, Subscriptions, Users } from '@rocket.chat/models';
 import { Random } from '@rocket.chat/random';
-import { LivechatVisitors, ReadReceipts, Messages, Rooms } from '@rocket.chat/models';
 
-import { Subscriptions, Users } from '../../../../app/models/server';
+import { notifyOnRoomChangedById, notifyOnMessageChange } from '../../../../app/lib/server/lib/notifyListener';
 import { settings } from '../../../../app/settings/server';
 import { SystemLogger } from '../../../../server/lib/logger/system';
 import { roomCoordinator } from '../../../../server/lib/rooms/roomCoordinator';
@@ -14,25 +14,28 @@ const debounceByRoomId = function (fn) {
 		clearTimeout(list[roomId]);
 		list[roomId] = setTimeout(() => {
 			fn.call(this, roomId, ...args);
+			delete list[roomId];
 		}, 2000);
 	};
 };
 
-const updateMessages = debounceByRoomId(
-	Meteor.bindEnvironment(({ _id, lm }) => {
-		// @TODO maybe store firstSubscription in room object so we don't need to call the above update method
-		const firstSubscription = Subscriptions.getMinimumLastSeenByRoomId(_id);
-		if (!firstSubscription || !firstSubscription.ls) {
-			return;
-		}
+const updateMessages = debounceByRoomId(async ({ _id, lm }) => {
+	// @TODO maybe store firstSubscription in room object so we don't need to call the above update method
+	const firstSubscription = await Subscriptions.getMinimumLastSeenByRoomId(_id);
+	if (!firstSubscription || !firstSubscription.ls) {
+		return;
+	}
 
-		Promise.await(Messages.setVisibleMessagesAsRead(_id, firstSubscription.ls));
+	const result = await Messages.setVisibleMessagesAsRead(_id, firstSubscription.ls);
+	if (result.modifiedCount > 0) {
+		void api.broadcast('notify.messagesRead', { rid: _id, until: firstSubscription.ls });
+	}
 
-		if (lm <= firstSubscription.ls) {
-			Promise.await(Rooms.setLastMessageAsRead(_id));
-		}
-	}),
-);
+	if (lm <= firstSubscription.ls) {
+		await Rooms.setLastMessageAsRead(_id);
+		void notifyOnRoomChangedById(_id);
+	}
+});
 
 export const ReadReceipt = {
 	async markMessagesAsRead(roomId, userId, userLastSeen) {
@@ -49,7 +52,7 @@ export const ReadReceipt = {
 
 		this.storeReadReceipts(await Messages.findVisibleUnreadMessagesByRoomAndDate(roomId, userLastSeen).toArray(), roomId, userId);
 
-		updateMessages(room);
+		await updateMessages(room);
 	},
 
 	async markMessageAsReadBySender(message, { _id: roomId, t }, userId) {
@@ -62,13 +65,18 @@ export const ReadReceipt = {
 		}
 
 		// mark message as read if the sender is the only one in the room
-		const isUserAlone = Subscriptions.findByRoomIdAndNotUserId(roomId, userId, { fields: { _id: 1 } }).count() === 0;
+		const isUserAlone = (await Subscriptions.countByRoomIdAndNotUserId(roomId, userId)) === 0;
 		if (isUserAlone) {
-			await Messages.setAsReadById(message._id);
+			const result = await Messages.setAsReadById(message._id);
+			if (result.modifiedCount > 0) {
+				void notifyOnMessageChange({
+					id: message._id,
+				});
+			}
 		}
 
 		const extraData = roomCoordinator.getRoomDirectives(t).getReadReceiptsExtraData(message);
-		this.storeReadReceipts([{ _id: message._id }], roomId, userId, extraData);
+		this.storeReadReceipts([message], roomId, userId, extraData);
 	},
 
 	async storeThreadMessagesReadReceipts(tmid, userId, userLastSeen) {
@@ -95,6 +103,10 @@ export const ReadReceipt = {
 				userId,
 				messageId: message._id,
 				ts,
+				...(message.t && { t: message.t }),
+				...(message.pinned && { pinned: true }),
+				...(message.drid && { drid: message.drid }),
+				...(message.tmid && { tmid: message.tmid }),
 				...extraData,
 			}));
 
@@ -118,7 +130,7 @@ export const ReadReceipt = {
 				...receipt,
 				user: receipt.token
 					? await LivechatVisitors.getVisitorByToken(receipt.token, { projection: { username: 1, name: 1 } })
-					: Users.findOneById(receipt.userId, { fields: { username: 1, name: 1 } }),
+					: await Users.findOneById(receipt.userId, { projection: { username: 1, name: 1 } }),
 			})),
 		);
 	},

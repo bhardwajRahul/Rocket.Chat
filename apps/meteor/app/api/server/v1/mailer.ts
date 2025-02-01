@@ -1,23 +1,21 @@
 import { isMailerProps, isMailerUnsubscribeProps } from '@rocket.chat/rest-typings';
 
+import { sendMail } from '../../../mail-messages/server/functions/sendMail';
+import { Mailer } from '../../../mail-messages/server/lib/Mailer';
 import { API } from '../api';
-import { hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
 
 API.v1.addRoute(
 	'mailer',
 	{
 		authRequired: true,
 		validateParams: isMailerProps,
+		permissionsRequired: ['send-mail'],
 	},
 	{
 		async post() {
-			if (!(await hasPermissionAsync(this.userId, 'send-mail'))) {
-				throw new Error('error-not-allowed');
-			}
-
 			const { from, subject, body, dryrun, query } = this.bodyParams;
 
-			const result = await Meteor.callAsync('Mailer.sendMail', from, subject, body, Boolean(dryrun), query);
+			const result = await sendMail({ from, subject, body, dryrun: Boolean(dryrun), query });
 
 			return API.v1.success(result);
 		},
@@ -29,12 +27,13 @@ API.v1.addRoute(
 	{
 		authRequired: true,
 		validateParams: isMailerUnsubscribeProps,
+		rateLimiterOptions: { intervalTimeInMS: 60000, numRequestsAllowed: 1 },
 	},
 	{
 		async post() {
 			const { _id, createdAt } = this.bodyParams;
 
-			await Meteor.callAsync('Mailer:unsubscribe', _id, createdAt);
+			await Mailer.unsubscribe(_id, createdAt);
 
 			return API.v1.success();
 		},

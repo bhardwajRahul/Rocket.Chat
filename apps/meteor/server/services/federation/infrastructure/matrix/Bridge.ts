@@ -1,22 +1,30 @@
 import type { IMessage } from '@rocket.chat/core-typings';
-import type { AppServiceOutput, Bridge } from '@rocket.chat/forked-matrix-appservice-bridge';
+import { serverFetch as fetch } from '@rocket.chat/server-fetch';
+import type { AppServiceOutput, Bridge } from 'matrix-appservice-bridge';
 
 import type { IExternalUserProfileInformation, IFederationBridge, IFederationBridgeRegistrationFile } from '../../domain/IFederationBridge';
+import type { RocketChatSettingsAdapter } from '../rocket-chat/adapters/Settings';
 import { federationBridgeLogger } from '../rocket-chat/adapters/logger';
-import { toExternalMessageFormat, toExternalQuoteMessageFormat } from './converters/room/to-internal-parser-formatter';
 import { convertEmojisFromRCFormatToMatrixFormat } from './converters/room/MessageReceiver';
+import { formatExternalUserIdToInternalUsernameFormat } from './converters/room/RoomReceiver';
+import { toExternalMessageFormat, toExternalQuoteMessageFormat } from './converters/room/to-internal-parser-formatter';
 import type { AbstractMatrixEvent } from './definitions/AbstractMatrixEvent';
-import { MatrixEnumRelatesToRelType, MatrixEnumSendMessageType } from './definitions/events/RoomMessageSent';
 import { MatrixEventType } from './definitions/MatrixEventType';
 import { MatrixRoomType } from './definitions/MatrixRoomType';
 import { MatrixRoomVisibility } from './definitions/MatrixRoomVisibility';
 import { RoomMembershipChangedEventType } from './definitions/events/RoomMembershipChanged';
+import { MatrixEnumRelatesToRelType, MatrixEnumSendMessageType } from './definitions/events/RoomMessageSent';
 import type { MatrixEventRoomNameChanged } from './definitions/events/RoomNameChanged';
 import type { MatrixEventRoomTopicChanged } from './definitions/events/RoomTopicChanged';
-import type { RocketChatSettingsAdapter } from '../rocket-chat/adapters/Settings';
-import { fetch } from '../../../../lib/http/fetch';
+import { HttpStatusCodes } from './helpers/HtttpStatusCodes';
+import { extractUserIdAndHomeserverFromMatrixId } from './helpers/MatrixIdStringTools';
+import { VerificationStatus, MATRIX_USER_IN_USE } from './helpers/MatrixIdVerificationTypes';
 
 let MatrixUserInstance: any;
+
+const DEFAULT_TIMEOUT_IN_MS_FOR_JOINING_ROOMS = 180000;
+
+const DEFAULT_TIMEOUT_IN_MS_FOR_PING_EVENT = 60 * 1000;
 
 export class MatrixBridge implements IFederationBridge {
 	protected bridgeInstance: Bridge;
@@ -25,7 +33,10 @@ export class MatrixBridge implements IFederationBridge {
 
 	protected isUpdatingBridgeStatus = false;
 
-	constructor(protected internalSettings: RocketChatSettingsAdapter, protected eventHandler: (event: AbstractMatrixEvent) => void) {} // eslint-disable-line no-empty-function
+	constructor(
+		protected internalSettings: RocketChatSettingsAdapter,
+		protected eventHandler: (event: AbstractMatrixEvent) => void,
+	) {} // eslint-disable-line no-empty-function
 
 	public async start(): Promise<void> {
 		if (this.isUpdatingBridgeStatus) {
@@ -38,6 +49,32 @@ export class MatrixBridge implements IFederationBridge {
 
 			if (!this.isRunning) {
 				await this.bridgeInstance.run(this.internalSettings.getBridgePort());
+
+				this.bridgeInstance.addAppServicePath({
+					method: 'POST',
+					path: '/_matrix/app/v1/ping',
+					authenticate: true,
+					handler: (_req, res, _next) => {
+						/*
+						 * https://spec.matrix.org/v1.11/application-service-api/#post_matrixappv1ping
+						 * Spec does not talk about what to do with the id. It is safe to ignore it as we are already checking for
+						 * homeserver token to be correct.
+						 * From the spec this might be a bit confusing, as it shows a txn id for post, but app service doing nothing with it afterwards
+						 * when receiving from the homeserver.
+						 * From spec directly -
+							AS ---> HS : /_matrix/client/v1/appservice/{appserviceId}/ping {"transaction_id": "meow"}
+								HS ---> AS : /_matrix/app/v1/ping {"transaction_id": "meow"}
+								HS <--- AS : 200 OK {}
+							AS <--- HS : 200 OK {"duration_ms": 123}
+						 * https://github.com/matrix-org/matrix-spec/blob/e53e6ea8764b95f0bdb738549fca6f9f3f901298/content/application-service-api.md?plain=1#L229-L232
+						 * Code - wise, also doesn't care what happens with the response.
+						 * https://github.com/element-hq/synapse/blob/cb6f4a84a6a8f2b79b80851f37eb5fa4c7c5264a/synapse/rest/client/appservice_ping.py#L80 - nothing done on return
+						 * https://github.com/element-hq/synapse/blob/cb6f4a84a6a8f2b79b80851f37eb5fa4c7c5264a/synapse/appservice/api.py#L321-L332 - not even returning the response, caring for just the http status code - https://github.com/element-hq/synapse/blob/cb6f4a84a6a8f2b79b80851f37eb5fa4c7c5264a/synapse/http/client.py#L532-L537
+						 */
+						res.status(200).json({});
+					},
+				});
+
 				this.isRunning = true;
 			}
 		} catch (err) {
@@ -68,7 +105,7 @@ export class MatrixBridge implements IFederationBridge {
 				...(externalInformation.avatar_url
 					? {
 							avatarUrl: externalInformation.avatar_url,
-					  }
+						}
 					: {}),
 			};
 		} catch (err) {
@@ -77,7 +114,19 @@ export class MatrixBridge implements IFederationBridge {
 	}
 
 	public async joinRoom(externalRoomId: string, externalUserId: string, viaServers?: string[]): Promise<void> {
-		await this.bridgeInstance.getIntent(externalUserId).join(externalRoomId, viaServers);
+		try {
+			await this.bridgeInstance
+				.getIntent(externalUserId)
+				.matrixClient.doRequest(
+					'POST',
+					`/_matrix/client/v3/join/${externalRoomId}`,
+					{ server_name: viaServers },
+					{},
+					DEFAULT_TIMEOUT_IN_MS_FOR_JOINING_ROOMS,
+				);
+		} catch (e) {
+			throw new Error('Error joining Matrix room');
+		}
 	}
 
 	public async getRoomHistoricalJoinEvents(
@@ -103,6 +152,38 @@ export class MatrixBridge implements IFederationBridge {
 			}));
 	}
 
+	public async getRoomData(
+		externalUserId: string,
+		externalRoomId: string,
+	): Promise<{ creator: { id: string; username: string }; name: string; joinedMembers: string[] } | undefined> {
+		const includeEvents = ['join'];
+		const excludeEvents = ['leave', 'ban'];
+		const members = await this.bridgeInstance
+			.getIntent(externalUserId)
+			.matrixClient.getRoomMembers(externalRoomId, undefined, includeEvents as any[], excludeEvents as any[]);
+
+		const joinedMembers = await this.bridgeInstance.getIntent(externalUserId).matrixClient.getJoinedRoomMembers(externalRoomId);
+
+		const oldestFirst = members.sort((a, b) => a.timestamp - b.timestamp).shift();
+		if (!oldestFirst) {
+			return;
+		}
+
+		const roomName = await this.getRoomName(externalRoomId, externalUserId);
+		if (!roomName) {
+			return;
+		}
+
+		return {
+			creator: {
+				id: oldestFirst.sender,
+				username: formatExternalUserIdToInternalUsernameFormat(oldestFirst.sender),
+			},
+			joinedMembers,
+			name: roomName,
+		};
+	}
+
 	public async inviteToRoom(externalRoomId: string, externalInviterId: string, externalInviteeId: string): Promise<void> {
 		try {
 			await this.bridgeInstance.getIntent(externalInviterId).invite(externalRoomId, externalInviteeId);
@@ -117,6 +198,41 @@ export class MatrixBridge implements IFederationBridge {
 		} catch (e) {
 			// no-op
 		}
+	}
+
+	public async verifyInviteeIds(matrixIds: string[]): Promise<Map<string, string>> {
+		const matrixIdVerificationMap = new Map();
+		const matrixIdsVerificationPromises = matrixIds.map((matrixId) => this.verifyInviteeId(matrixId));
+		const matrixIdsVerificationPromiseResponse = await Promise.allSettled(matrixIdsVerificationPromises);
+		const matrixIdsVerificationFulfilledResults = matrixIdsVerificationPromiseResponse
+			.filter((result): result is PromiseFulfilledResult<VerificationStatus> => result.status === 'fulfilled')
+			.map((result) => result.value);
+
+		matrixIds.forEach((matrixId, idx) => matrixIdVerificationMap.set(matrixId, matrixIdsVerificationFulfilledResults[idx]));
+		return matrixIdVerificationMap;
+	}
+
+	private async verifyInviteeId(externalInviteeId: string): Promise<VerificationStatus> {
+		const [userId, homeserverUrl] = extractUserIdAndHomeserverFromMatrixId(externalInviteeId);
+		try {
+			const response = await fetch(`https://${homeserverUrl}/_matrix/client/v3/register/available`, { params: { username: userId } });
+
+			if (response.status === HttpStatusCodes.BAD_REQUEST) {
+				const responseBody = await response.json();
+
+				if (responseBody.errcode === MATRIX_USER_IN_USE) {
+					return VerificationStatus.VERIFIED;
+				}
+			}
+
+			if (response.status === HttpStatusCodes.OK) {
+				return VerificationStatus.UNVERIFIED;
+			}
+		} catch (e) {
+			return VerificationStatus.UNABLE_TO_VERIFY;
+		}
+
+		return VerificationStatus.UNABLE_TO_VERIFY;
 	}
 
 	public async createUser(username: string, name: string, domain: string, avatarUrl?: string): Promise<string> {
@@ -188,6 +304,160 @@ export class MatrixBridge implements IFederationBridge {
 		}
 	}
 
+	public async sendThreadMessage(
+		externalRoomId: string,
+		externalSenderId: string,
+		message: IMessage,
+		relatesToEventId: string,
+	): Promise<string> {
+		const text = this.escapeEmojis(
+			await toExternalMessageFormat({
+				message: message.msg,
+				externalRoomId,
+				homeServerDomain: this.internalSettings.getHomeServerDomain(),
+			}),
+		);
+		const messageId = await this.bridgeInstance
+			.getIntent(externalSenderId)
+			.matrixClient.sendRawEvent(externalRoomId, MatrixEventType.ROOM_MESSAGE_SENT, {
+				'msgtype': 'm.text',
+				'body': this.escapeEmojis(message.msg),
+				'formatted_body': text,
+				'format': 'org.matrix.custom.html',
+				'm.relates_to': {
+					'rel_type': 'm.thread',
+					'event_id': relatesToEventId,
+					'is_falling_back': true,
+					'm.in_reply_to': {
+						event_id: relatesToEventId,
+					},
+				},
+			});
+		return messageId;
+	}
+
+	public async sendThreadReplyToMessage(
+		externalRoomId: string,
+		externalUserId: string,
+		eventToReplyTo: string,
+		originalEventSender: string,
+		replyMessage: string,
+		relatesToEventId: string,
+	): Promise<string> {
+		const { formattedMessage, message } = await toExternalQuoteMessageFormat({
+			externalRoomId,
+			eventToReplyTo,
+			originalEventSender,
+			message: this.escapeEmojis(replyMessage),
+			homeServerDomain: this.internalSettings.getHomeServerDomain(),
+		});
+		const messageId = await this.bridgeInstance
+			.getIntent(externalUserId)
+			.matrixClient.sendRawEvent(externalRoomId, MatrixEventType.ROOM_MESSAGE_SENT, {
+				'msgtype': 'm.text',
+				'body': message,
+				'format': 'org.matrix.custom.html',
+				'formatted_body': formattedMessage,
+				'm.relates_to': {
+					'rel_type': 'm.thread',
+					'event_id': relatesToEventId,
+					'is_falling_back': false,
+					'm.in_reply_to': {
+						event_id: eventToReplyTo,
+					},
+				},
+			});
+
+		return messageId;
+	}
+
+	public async sendMessageFileToThread(
+		externalRoomId: string,
+		externalSenderId: string,
+		content: Buffer,
+		fileDetails: { filename: string; fileSize: number; mimeType: string; metadata?: { width?: number; height?: number; format?: string } },
+		relatesToEventId: string,
+	): Promise<string> {
+		try {
+			const mxcUrl = await this.bridgeInstance.getIntent(externalSenderId).uploadContent(content);
+			const messageId = await this.bridgeInstance
+				.getIntent(externalSenderId)
+				.matrixClient.sendRawEvent(externalRoomId, MatrixEventType.ROOM_MESSAGE_SENT, {
+					'body': fileDetails.filename,
+					'filename': fileDetails.filename,
+					'info': {
+						size: fileDetails.fileSize,
+						mimetype: fileDetails.mimeType,
+						...(fileDetails.metadata?.height && fileDetails.metadata?.width
+							? { h: fileDetails.metadata?.height, w: fileDetails.metadata?.width }
+							: {}),
+					},
+					'msgtype': this.getMsgTypeBasedOnMimeType(fileDetails.mimeType),
+					'url': mxcUrl,
+					'm.relates_to': {
+						'rel_type': 'm.thread',
+						'event_id': relatesToEventId,
+						'is_falling_back': true,
+						'm.in_reply_to': {
+							event_id: relatesToEventId,
+						},
+					},
+				});
+
+			return messageId;
+		} catch (e: any) {
+			federationBridgeLogger.error({ msg: 'Error sending file to thread', err: e });
+			if (e.body?.includes('413') || e.body?.includes('M_TOO_LARGE')) {
+				throw new Error('File is too large');
+			}
+			return '';
+		}
+	}
+
+	public async sendReplyMessageFileToThread(
+		externalRoomId: string,
+		externalSenderId: string,
+		content: Buffer,
+		fileDetails: { filename: string; fileSize: number; mimeType: string; metadata?: { width?: number; height?: number; format?: string } },
+		eventToReplyTo: string,
+		relatesToEventId: string,
+	): Promise<string> {
+		try {
+			const mxcUrl = await this.bridgeInstance.getIntent(externalSenderId).uploadContent(content);
+			const messageId = await this.bridgeInstance
+				.getIntent(externalSenderId)
+				.matrixClient.sendRawEvent(externalRoomId, MatrixEventType.ROOM_MESSAGE_SENT, {
+					'body': fileDetails.filename,
+					'filename': fileDetails.filename,
+					'info': {
+						size: fileDetails.fileSize,
+						mimetype: fileDetails.mimeType,
+						...(fileDetails.metadata?.height && fileDetails.metadata?.width
+							? { h: fileDetails.metadata?.height, w: fileDetails.metadata?.width }
+							: {}),
+					},
+					'msgtype': this.getMsgTypeBasedOnMimeType(fileDetails.mimeType),
+					'url': mxcUrl,
+					'm.relates_to': {
+						'rel_type': 'm.thread',
+						'event_id': relatesToEventId,
+						'is_falling_back': false,
+						'm.in_reply_to': {
+							event_id: eventToReplyTo,
+						},
+					},
+				});
+
+			return messageId;
+		} catch (e: any) {
+			federationBridgeLogger.error({ msg: 'Error sending file to thread', err: e });
+			if (e.body?.includes('413') || e.body?.includes('M_TOO_LARGE')) {
+				throw new Error('File is too large');
+			}
+			return '';
+		}
+	}
+
 	public async sendReplyToMessage(
 		externalRoomId: string,
 		externalUserId: string,
@@ -222,12 +492,12 @@ export class MatrixBridge implements IFederationBridge {
 	}
 
 	public async getReadStreamForFileFromUrl(externalUserId: string, fileUrl: string): Promise<ReadableStream> {
-		const response = await fetch(this.convertMatrixUrlToHttp(externalUserId, fileUrl));
+		const response = await fetch(await this.convertMatrixUrlToHttp(externalUserId, fileUrl));
 		if (!response.body) {
 			throw new Error('Not able to download the file');
 		}
 
-		return response.body;
+		return response.body as unknown as ReadableStream;
 	}
 
 	public isUserIdFromTheSameHomeserver(externalUserId: string, domain: string): boolean {
@@ -357,6 +627,7 @@ export class MatrixBridge implements IFederationBridge {
 
 			return messageId;
 		} catch (e: any) {
+			federationBridgeLogger.error({ msg: 'Error sending file to room', err: e });
 			if (e.body?.includes('413') || e.body?.includes('M_TOO_LARGE')) {
 				throw new Error('File is too large');
 			}
@@ -392,6 +663,7 @@ export class MatrixBridge implements IFederationBridge {
 
 			return messageId;
 		} catch (e: any) {
+			federationBridgeLogger.error({ msg: 'Error sending file to room', err: e });
 			if (e.body?.includes('413') || e.body?.includes('M_TOO_LARGE')) {
 				throw new Error('File is too large');
 			}
@@ -416,6 +688,10 @@ export class MatrixBridge implements IFederationBridge {
 		return MatrixEnumSendMessageType.FILE;
 	}
 
+	private getMyHomeServerOrigin() {
+		return new URL(`https://${this.internalSettings.getHomeServerDomain()}`).hostname;
+	}
+
 	public async uploadContent(
 		externalSenderId: string,
 		content: Buffer,
@@ -426,6 +702,7 @@ export class MatrixBridge implements IFederationBridge {
 
 			return mxcUrl;
 		} catch (e: any) {
+			federationBridgeLogger.error({ msg: 'Error uploading content to Matrix', err: e });
 			if (e.body?.includes('413') || e.body?.includes('M_TOO_LARGE')) {
 				throw new Error('File is too large');
 			}
@@ -462,7 +739,7 @@ export class MatrixBridge implements IFederationBridge {
 		await this.bridgeInstance.getIntent(externalUserId).setRoomTopic(externalRoomId, roomTopic);
 	}
 
-	public convertMatrixUrlToHttp(externalUserId: string, matrixUrl: string): string {
+	public convertMatrixUrlToHttp(externalUserId: string, matrixUrl: string): Promise<string> {
 		return this.bridgeInstance.getIntent(externalUserId).matrixClient.mxcToHttp(matrixUrl);
 	}
 
@@ -470,9 +747,9 @@ export class MatrixBridge implements IFederationBridge {
 		federationBridgeLogger.info('Performing Dynamic Import of matrix-appservice-bridge');
 
 		// Dynamic import to prevent Rocket.Chat from loading the module until needed and then handle if that fails
-		const { Bridge, AppServiceRegistration, MatrixUser } = await import('@rocket.chat/forked-matrix-appservice-bridge');
+		const { Bridge, AppServiceRegistration, MatrixUser } = await import('matrix-appservice-bridge');
 		MatrixUserInstance = MatrixUser;
-		const registrationFile = this.internalSettings.generateRegistrationFileObject();
+		const registrationFile = this.internalSettings.getAppServiceRegistrationObject();
 
 		this.bridgeInstance = new Bridge({
 			homeserverUrl: this.internalSettings.getHomeServerUrl(),
@@ -482,18 +759,28 @@ export class MatrixBridge implements IFederationBridge {
 			controller: {
 				onEvent: (request) => {
 					const event = request.getData() as unknown as AbstractMatrixEvent;
+
+					// TODO: can we ignore all events from out homeserver?
+					// This was added particularly to avoid duplicating messages.
+					// Messages sent from rocket.chat also causes a m.room.message event, which if gets to this bridge
+					// before the event id promise is resolved, the respective message does not get event id attached to them any longer,
+					// thus this event handler "resends" the message to the rocket.chat room (not to matrix though).
+					if (event.type === 'm.room.message' && this.extractHomeserverOrigin(event.sender) === this.getMyHomeServerOrigin()) {
+						return;
+					}
+
 					this.eventHandler(event);
 				},
 				onLog: (line, isError) => {
 					console.log(line, isError);
 				},
-				...(this.internalSettings.generateRegistrationFileObject().enableEphemeralEvents
+				...(this.internalSettings.getAppServiceRegistrationObject().enableEphemeralEvents
 					? {
 							onEphemeralEvent: (request) => {
 								const event = request.getData() as unknown as AbstractMatrixEvent;
 								this.eventHandler(event);
 							},
-					  }
+						}
 					: {}),
 			},
 		});
@@ -509,5 +796,38 @@ export class MatrixBridge implements IFederationBridge {
 			'namespaces': registrationFile.listenTo,
 			'de.sorunome.msc2409.push_ephemeral': registrationFile.enableEphemeralEvents,
 		};
+	}
+
+	public async ping(): Promise<{ durationMs: number }> {
+		if (!this.isRunning || !this.bridgeInstance) {
+			throw new Error("matrix bridge isn't yet running");
+		}
+
+		const { duration_ms: durationMs } = await this.bridgeInstance.getIntent().matrixClient.doRequest(
+			'POST',
+			`/_matrix/client/v1/appservice/${this.internalSettings.getApplicationServiceId()}/ping`,
+			{},
+			/*
+			 * Empty txn id as it is optional, neither does the spec says exactly what to do with it.
+			 * https://github.com/matrix-org/matrix-spec/blob/1fc8f8856fe47849f90344cfa91601c984627acb/data/api/client-server/appservice_ping.yaml#L55-L56
+			 */
+			{},
+			DEFAULT_TIMEOUT_IN_MS_FOR_PING_EVENT,
+		);
+
+		return { durationMs };
+	}
+
+	public async deactivateUser(uid: string): Promise<void> {
+		/*
+		 * https://spec.matrix.org/v1.11/client-server-api/#post_matrixclientv3accountdeactivate
+		 * Using { erase: false } since rocket.chat side on deactivation we do not delete anything.
+		 */
+		const resp = await this.bridgeInstance
+			.getIntent()
+			.matrixClient.doRequest('POST', '/_matrix/client/v3/account/deactivate', { user_id: uid }, { erase: false });
+		if (resp.id_server_unbind_result !== 'success') {
+			throw new Error('Failed to deactivate matrix user');
+		}
 	}
 }

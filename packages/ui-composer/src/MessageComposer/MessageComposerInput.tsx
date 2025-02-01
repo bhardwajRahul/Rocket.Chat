@@ -1,6 +1,6 @@
-import { Box, Palette } from '@rocket.chat/fuselage';
 import { css } from '@rocket.chat/css-in-js';
-import type { ComponentProps, ReactElement } from 'react';
+import { Box, Palette } from '@rocket.chat/fuselage';
+import type { ComponentProps } from 'react';
 import { forwardRef } from 'react';
 
 const messageComposerInputStyle = css`
@@ -11,12 +11,14 @@ const messageComposerInputStyle = css`
 	}
 `;
 
-const MessageComposerInput = forwardRef<HTMLInputElement, ComponentProps<typeof Box>>(
-	(props, ref): ReactElement => (
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+interface MessageComposerInputProps extends ComponentProps<typeof Box> {}
+
+const MessageComposerInput = forwardRef<HTMLTextAreaElement, MessageComposerInputProps>(function MessageComposerInput(props, ref) {
+	return (
 		<Box is='label' width='full' fontSize={0}>
 			<Box
 				className={[messageComposerInputStyle, 'rc-message-box__textarea js-input-message']}
-				{...props}
 				color='default'
 				width='full'
 				minHeight='20px'
@@ -28,9 +30,10 @@ const MessageComposerInput = forwardRef<HTMLInputElement, ComponentProps<typeof 
 				mb={16}
 				borderWidth={0}
 				is='textarea'
+				{...props}
 			/>
 		</Box>
-	),
-);
+	);
+});
 
 export default MessageComposerInput;
