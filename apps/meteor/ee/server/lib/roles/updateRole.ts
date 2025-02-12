@@ -1,7 +1,8 @@
+import { api, MeteorError } from '@rocket.chat/core-services';
 import type { IRole } from '@rocket.chat/core-typings';
 import { Roles } from '@rocket.chat/models';
-import { api, MeteorError } from '@rocket.chat/core-services';
 
+import { notifyOnRoleChangedById } from '../../../../app/lib/server/lib/notifyListener';
 import { isValidRoleScope } from '../../../../lib/roles/isValidRoleScope';
 
 type UpdateRoleOptions = {
@@ -38,10 +39,13 @@ export const updateRole = async (roleId: IRole['_id'], roleData: Omit<IRole, '_i
 
 	await Roles.updateById(roleId, roleData.name, roleData.scope, roleData.description, roleData.mandatory2fa);
 
+	void notifyOnRoleChangedById(roleId);
+
 	if (options.broadcastUpdate) {
 		void api.broadcast('user.roleUpdate', {
 			type: 'changed',
 			_id: roleId,
+			scope: roleData.scope,
 		});
 	}
 

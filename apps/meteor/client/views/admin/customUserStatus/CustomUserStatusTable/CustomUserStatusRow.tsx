@@ -1,8 +1,8 @@
 import type { IUserStatus } from '@rocket.chat/core-typings';
-import { TableRow, TableCell } from '@rocket.chat/fuselage';
 import type { CSSProperties, ReactElement } from 'react';
-import React from 'react';
+import { useTranslation } from 'react-i18next';
 
+import { GenericTableRow, GenericTableCell } from '../../../../components/GenericTable';
 import MarkdownText from '../../../../components/MarkdownText';
 
 const style: CSSProperties = { whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' };
@@ -14,9 +14,10 @@ type CustomUserStatusRowProps = {
 
 const CustomUserStatusRow = ({ status, onClick }: CustomUserStatusRowProps): ReactElement => {
 	const { _id, name, statusType } = status;
+	const { t } = useTranslation();
 
 	return (
-		<TableRow
+		<GenericTableRow
 			key={_id}
 			onKeyDown={(): void => onClick(_id)}
 			onClick={(): void => onClick(_id)}
@@ -25,13 +26,13 @@ const CustomUserStatusRow = ({ status, onClick }: CustomUserStatusRowProps): Rea
 			action
 			qa-user-id={_id}
 		>
-			<TableCell fontScale='p2' color='default' style={style}>
+			<GenericTableCell fontScale='p2' color='default' style={style}>
 				<MarkdownText content={name} parseEmoji={true} variant='inline' />
-			</TableCell>
-			<TableCell fontScale='p2' color='default' style={style}>
-				{statusType}
-			</TableCell>
-		</TableRow>
+			</GenericTableCell>
+			<GenericTableCell fontScale='p2' color='default' style={style}>
+				{t(statusType)}
+			</GenericTableCell>
+		</GenericTableRow>
 	);
 };
 

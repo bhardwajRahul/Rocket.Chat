@@ -1,11 +1,12 @@
-import { Meteor } from 'meteor/meteor';
-import { Match } from 'meteor/check';
-import type { UpdateResult } from 'mongodb';
+import { Message } from '@rocket.chat/core-services';
 import type { IUser } from '@rocket.chat/core-typings';
 import { isRegisterUser } from '@rocket.chat/core-typings';
-import { Messages, Rooms } from '@rocket.chat/models';
+import { Rooms, Subscriptions } from '@rocket.chat/models';
+import { Match } from 'meteor/check';
+import { Meteor } from 'meteor/meteor';
+import type { UpdateResult } from 'mongodb';
 
-import { settings } from '../../../settings/server';
+import { notifyOnSubscriptionChangedByRoomId } from '../../../lib/server/lib/notifyListener';
 
 export const saveRoomEncrypted = async function (rid: string, encrypted: boolean, user: IUser, sendMessage = true): Promise<UpdateResult> {
 	if (!Match.test(rid, String)) {
@@ -24,7 +25,14 @@ export const saveRoomEncrypted = async function (rid: string, encrypted: boolean
 	if (update && sendMessage) {
 		const type = encrypted ? 'room_e2e_enabled' : 'room_e2e_disabled';
 
-		await Messages.createWithTypeRoomIdMessageUserAndUnread(type, rid, user.username, user, settings.get('Message_Read_Receipt_Enabled'));
+		await Message.saveSystemMessage(type, rid, user.username, user);
+	}
+
+	if (encrypted) {
+		const { modifiedCount } = await Subscriptions.disableAutoTranslateByRoomId(rid);
+		if (modifiedCount) {
+			void notifyOnSubscriptionChangedByRoomId(rid);
+		}
 	}
 	return update;
 };

@@ -1,11 +1,10 @@
-import { Meteor } from 'meteor/meteor';
 import type { IRoom, IUser, RoomType } from '@rocket.chat/core-typings';
-import { Rooms } from '@rocket.chat/models';
+import { Rooms, Users } from '@rocket.chat/models';
+import { Meteor } from 'meteor/meteor';
 
-import { Users } from '../../../models/server';
+import { addUserToRoom } from './addUserToRoom';
 import { isObject } from '../../../../lib/utils/isObject';
 import { createDirectMessage } from '../../../../server/methods/createDirectMessage';
-import { addUserToRoom } from './addUserToRoom';
 
 export const getRoomByNameOrIdWithOptionToJoin = async ({
 	user,
@@ -32,17 +31,18 @@ export const getRoomByNameOrIdWithOptionToJoin = async ({
 		// If the nameOrId starts with @ OR type is 'd', then let's try just a direct message
 		nameOrId = nameOrId.replace('@', '');
 
-		let roomUser: IUser;
+		let roomUser;
 		if (tryDirectByUserIdOnly) {
-			roomUser = Users.findOneById(nameOrId);
+			roomUser = await Users.findOneById(nameOrId);
 		} else {
-			roomUser = Users.findOne({
+			roomUser = await Users.findOne({
 				$or: [{ _id: nameOrId }, { username: nameOrId }],
 			});
 		}
 
-		const rid = isObject(roomUser) ? [user._id, roomUser._id].sort().join('') : nameOrId;
-		room = await Rooms.findOneById(rid);
+		room = isObject(roomUser)
+			? await Rooms.findOneDirectRoomContainingAllUserIDs([...new Set([user._id, roomUser._id])])
+			: await Rooms.findOneById(nameOrId);
 
 		// If the room hasn't been found yet, let's try some more
 		if (!isObject(room)) {
@@ -56,7 +56,7 @@ export const getRoomByNameOrIdWithOptionToJoin = async ({
 				}
 			}
 
-			await createDirectMessage([roomUser.username], user._id);
+			const { rid } = await createDirectMessage([roomUser.username], user._id);
 
 			return Rooms.findOneById(rid);
 		}

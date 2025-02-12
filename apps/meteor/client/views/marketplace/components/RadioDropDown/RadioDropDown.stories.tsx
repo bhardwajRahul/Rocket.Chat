@@ -1,9 +1,8 @@
-import type { Story } from '@storybook/react';
-import React, { useState } from 'react';
+import type { StoryFn } from '@storybook/react';
+import { useState } from 'react';
 
 import { useRadioToggle } from '../../hooks/useRadioToggle';
 import RadioButtonList from '../RadioButtonList';
-import RadioDropDownAnchor from './RadioDownAnchor';
 import RadioDropDown from './RadioDropDown';
 
 export default {
@@ -21,9 +20,7 @@ const testGroup = {
 	],
 };
 
-export const Anchor: Story = () => <RadioDropDownAnchor group={testGroup} />;
-
-export const List: Story = () => {
+export const List: StoryFn = () => {
 	const [data, setData] = useState(() => testGroup);
 
 	const onSelected = useRadioToggle(setData);
@@ -31,7 +28,7 @@ export const List: Story = () => {
 	return <RadioButtonList group={data} onSelected={onSelected} />;
 };
 
-export const Default: Story = () => {
+export const Default: StoryFn = () => {
 	const [data, setData] = useState(() => testGroup);
 
 	const onSelected = useRadioToggle(setData);

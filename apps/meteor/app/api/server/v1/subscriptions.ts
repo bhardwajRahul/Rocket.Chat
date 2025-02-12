@@ -1,14 +1,14 @@
-import { Meteor } from 'meteor/meteor';
+import { Subscriptions } from '@rocket.chat/models';
 import {
 	isSubscriptionsGetProps,
 	isSubscriptionsGetOneProps,
 	isSubscriptionsReadProps,
 	isSubscriptionsUnreadProps,
 } from '@rocket.chat/rest-typings';
-import { Subscriptions } from '@rocket.chat/models';
+import { Meteor } from 'meteor/meteor';
 
-import { API } from '../api';
 import { readMessages } from '../../../../server/lib/readMessages';
+import { API } from '../api';
 
 API.v1.addRoute(
 	'subscriptions.get',
@@ -35,7 +35,7 @@ API.v1.addRoute(
 					? {
 							update: result,
 							remove: [],
-					  }
+						}
 					: result,
 			);
 		},
@@ -82,6 +82,7 @@ API.v1.addRoute(
 		async post() {
 			const { readThreads = false } = this.bodyParams;
 			const roomId = 'rid' in this.bodyParams ? this.bodyParams.rid : this.bodyParams.roomId;
+
 			await readMessages(roomId, this.userId, readThreads);
 
 			return API.v1.success();

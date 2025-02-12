@@ -1,16 +1,18 @@
-import { Meteor } from 'meteor/meteor';
-import { check } from 'meteor/check';
-import { api, Team } from '@rocket.chat/core-services';
+import { api, Message, Team } from '@rocket.chat/core-services';
 import type { IRoom, IUser } from '@rocket.chat/core-typings';
 import { isRoomFederated } from '@rocket.chat/core-typings';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
-import { Subscriptions } from '@rocket.chat/models';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Subscriptions, Rooms, Users } from '@rocket.chat/models';
+import { check } from 'meteor/check';
+import { Meteor } from 'meteor/meteor';
 
 import { hasPermissionAsync } from '../../app/authorization/server/functions/hasPermission';
-import { Users, Messages, Rooms } from '../../app/models/server';
+import { notifyOnSubscriptionChangedById } from '../../app/lib/server/lib/notifyListener';
 import { settings } from '../../app/settings/server';
+import { syncRoomRolePriorityForUserAndRoom } from '../lib/roles/syncRoomRolePriority';
+import { isFederationReady, isFederationEnabled, FederationMatrixInvalidConfigurationError } from '../services/federation/utils';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		addRoomOwner(rid: IRoom['_id'], userId: IUser['_id']): boolean;
@@ -30,14 +32,26 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		const room = Rooms.findOneById(rid, { fields: { t: 1, federated: 1 } });
-		if (!(await hasPermissionAsync(uid, 'set-owner', rid)) && !isRoomFederated(room)) {
+		const room = await Rooms.findOneById(rid, { projection: { t: 1, federated: 1 } });
+		if (!room) {
+			throw new Meteor.Error('error-invalid-room', 'Invalid room', {
+				method: 'addRoomOwner',
+			});
+		}
+
+		const isFederated = isRoomFederated(room);
+
+		if (!(await hasPermissionAsync(uid, 'set-owner', rid)) && !isFederated) {
 			throw new Meteor.Error('error-not-allowed', 'Not allowed', {
 				method: 'addRoomOwner',
 			});
 		}
 
-		const user = Users.findOneById(userId);
+		if (isFederated && (!isFederationEnabled() || !isFederationReady())) {
+			throw new FederationMatrixInvalidConfigurationError('unable to change room owners');
+		}
+
+		const user = await Users.findOneById(userId);
 
 		if (!user?.username) {
 			throw new Meteor.Error('error-invalid-user', 'Invalid user', {
@@ -59,17 +73,21 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		await Subscriptions.addRoleById(subscription._id, 'owner');
+		const addRoleResponse = await Subscriptions.addRoleById(subscription._id, 'owner');
+		await syncRoomRolePriorityForUserAndRoom(userId, rid, subscription.roles?.concat(['owner']) || ['owner']);
 
-		const fromUser = Users.findOneById(uid);
+		if (addRoleResponse.modifiedCount) {
+			void notifyOnSubscriptionChangedById(subscription._id);
+		}
 
-		Messages.createSubscriptionRoleAddedWithRoomIdAndUser(rid, user, {
-			u: {
-				_id: fromUser._id,
-				username: fromUser.username,
-			},
-			role: 'owner',
-		});
+		const fromUser = await Users.findOneById(uid);
+		if (!fromUser) {
+			throw new Meteor.Error('error-invalid-user', 'Invalid user', {
+				method: 'addRoomLeader',
+			});
+		}
+
+		await Message.saveSystemMessage('subscription-role-added', rid, user.username, fromUser, { role: 'owner' });
 
 		const team = await Team.getOneByMainRoomId(rid);
 		if (team) {
@@ -84,7 +102,7 @@ Meteor.methods<ServerMethods>({
 				name: user.name,
 			},
 			scope: rid,
-		};
+		} as const;
 		if (settings.get('UI_DisplayRoles')) {
 			void api.broadcast('user.roleUpdate', event);
 		}

@@ -2,11 +2,11 @@ import type { IRoom, IUser, ValueOf } from '@rocket.chat/core-typings';
 import { isRoomFederated, isDirectMessageRoom } from '@rocket.chat/core-typings';
 import { Subscriptions } from '@rocket.chat/models';
 
+import { RoomMemberActions, RoomSettingsEnum } from '../../../definition/IRoomTypeConfig';
 import {
 	escapeExternalFederationEventId,
 	unescapeExternalFederationEventId,
 } from './infrastructure/rocket-chat/adapters/federation-id-escape-helper';
-import { RoomMemberActions, RoomSettingsEnum } from '../../../definition/IRoomTypeConfig';
 
 const allowedActionsInFederatedRooms: ValueOf<typeof RoomMemberActions>[] = [
 	RoomMemberActions.REMOVE_USER,
@@ -17,7 +17,9 @@ const allowedActionsInFederatedRooms: ValueOf<typeof RoomMemberActions>[] = [
 	RoomMemberActions.LEAVE,
 ];
 
-const allowedActionsForModerators = allowedActionsInFederatedRooms.filter((action) => action !== RoomMemberActions.SET_AS_OWNER);
+const allowedActionsForModerators: ValueOf<typeof RoomMemberActions>[] = allowedActionsInFederatedRooms.filter(
+	(action) => action !== RoomMemberActions.SET_AS_OWNER,
+);
 
 const allowedRoomSettingsChangesInFederatedRooms: ValueOf<typeof RoomSettingsEnum>[] = [RoomSettingsEnum.NAME, RoomSettingsEnum.TOPIC];
 

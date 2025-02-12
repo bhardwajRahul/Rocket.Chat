@@ -1,22 +1,21 @@
+import { Box } from '@rocket.chat/fuselage';
 import {
 	HorizontalWizardLayout,
 	HorizontalWizardLayoutAside,
 	HorizontalWizardLayoutContent,
 	HorizontalWizardLayoutTitle,
 	HorizontalWizardLayoutFooter,
-	HorizontalWizardLayoutDescription,
 } from '@rocket.chat/layout';
-import type { ReactElement, ReactNode } from 'react';
-import { Box } from '@rocket.chat/fuselage';
 import { useSetting, useAssetWithDarkModePath } from '@rocket.chat/ui-contexts';
+import type { ReactElement, ReactNode } from 'react';
 
-import LoginSwitchLanguageFooter from '../components/LoginSwitchLanguageFooter';
 import LoginPoweredBy from '../components/LoginPoweredBy';
+import LoginSwitchLanguageFooter from '../components/LoginSwitchLanguageFooter';
 import LoginTerms from '../components/LoginTerms';
 import { RegisterTitle } from '../components/RegisterTitle';
 
 const HorizontalTemplate = ({ children }: { children: ReactNode }): ReactElement => {
-	const hideLogo = useSetting<boolean>('Layout_Login_Hide_Logo');
+	const hideLogo = useSetting('Layout_Login_Hide_Logo', false);
 	const customLogo = useAssetWithDarkModePath('logo');
 	const customBackground = useAssetWithDarkModePath('background');
 
@@ -29,9 +28,7 @@ const HorizontalTemplate = ({ children }: { children: ReactNode }): ReactElement
 				<HorizontalWizardLayoutTitle>
 					<RegisterTitle />
 				</HorizontalWizardLayoutTitle>
-				<HorizontalWizardLayoutDescription>
-					<LoginPoweredBy />
-				</HorizontalWizardLayoutDescription>
+				<LoginPoweredBy />
 			</HorizontalWizardLayoutAside>
 			<HorizontalWizardLayoutContent>
 				{children}

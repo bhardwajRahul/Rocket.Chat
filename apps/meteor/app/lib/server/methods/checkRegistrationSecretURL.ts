@@ -1,6 +1,6 @@
-import { Meteor } from 'meteor/meteor';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
 import { check } from 'meteor/check';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
+import { Meteor } from 'meteor/meteor';
 
 import { settings } from '../../../settings/server';
 

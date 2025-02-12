@@ -1,19 +1,20 @@
-import { Meteor } from 'meteor/meteor';
-import { check, Match } from 'meteor/check';
-import { isRoleAddUserToRoleProps, isRoleDeleteProps, isRoleRemoveUserFromRoleProps } from '@rocket.chat/rest-typings';
-import type { IRole } from '@rocket.chat/core-typings';
-import { Roles } from '@rocket.chat/models';
 import { api } from '@rocket.chat/core-services';
+import type { IRole } from '@rocket.chat/core-typings';
+import { Roles, Users } from '@rocket.chat/models';
+import { isRoleAddUserToRoleProps, isRoleDeleteProps, isRoleRemoveUserFromRoleProps } from '@rocket.chat/rest-typings';
+import { check, Match } from 'meteor/check';
+import { Meteor } from 'meteor/meteor';
 
-import { Users } from '../../../models/server';
-import { API } from '../api';
-import { hasRoleAsync, hasAnyRoleAsync } from '../../../authorization/server/functions/hasRole';
+import { removeUserFromRolesAsync } from '../../../../server/lib/roles/removeUserFromRoles';
 import { getUsersInRolePaginated } from '../../../authorization/server/functions/getUsersInRole';
-import { settings } from '../../../settings/server/index';
-import { apiDeprecationLogger } from '../../../lib/server/lib/deprecationWarningLogger';
 import { hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
-import { getUserFromParams } from '../helpers/getUserFromParams';
+import { hasRoleAsync, hasAnyRoleAsync } from '../../../authorization/server/functions/hasRole';
+import { apiDeprecationLogger } from '../../../lib/server/lib/deprecationWarningLogger';
+import { notifyOnRoleChanged } from '../../../lib/server/lib/notifyListener';
+import { settings } from '../../../settings/server/index';
+import { API } from '../api';
 import { getPaginationItems } from '../helpers/getPaginationItems';
+import { getUserFromParams } from '../helpers/getUserFromParams';
 
 API.v1.addRoute(
 	'roles.list',
@@ -68,7 +69,7 @@ API.v1.addRoute(
 					return API.v1.failure('error-invalid-role-properties');
 				}
 
-				apiDeprecationLogger.warn(`Assigning roles by name is deprecated and will be removed on the next major release of Rocket.Chat`);
+				apiDeprecationLogger.parameter(this.request.route, 'roleName', '7.0.0', this.response);
 			}
 
 			const role = roleId ? await Roles.findOneById(roleId) : await Roles.findOneByIdOrName(roleName as string);
@@ -91,7 +92,7 @@ API.v1.addRoute(
 
 API.v1.addRoute(
 	'roles.getUsersInRole',
-	{ authRequired: true },
+	{ authRequired: true, permissionsRequired: ['access-permissions'] },
 	{
 		async get() {
 			const { roomId, role } = this.queryParams;
@@ -109,9 +110,6 @@ API.v1.addRoute(
 			if (!role) {
 				throw new Meteor.Error('error-param-not-provided', 'Query param "role" is required');
 			}
-			if (!(await hasPermissionAsync(this.userId, 'access-permissions'))) {
-				throw new Meteor.Error('error-not-allowed', 'Not allowed');
-			}
 			if (roomId && !(await hasPermissionAsync(this.userId, 'view-other-user-channels'))) {
 				throw new Meteor.Error('error-not-allowed', 'Not allowed');
 			}
@@ -124,7 +122,14 @@ API.v1.addRoute(
 					throw new Meteor.Error('error-invalid-roleId');
 				}
 
-				apiDeprecationLogger.warn(`Querying roles by name is deprecated and will be removed on the next major release of Rocket.Chat`);
+				apiDeprecationLogger.deprecatedParameterUsage(
+					this.request.route,
+					'role',
+					'7.0.0',
+					this.response,
+					({ parameter, endpoint, version }) =>
+						`Querying \`${parameter}\` by name is deprecated in ${endpoint} and will be removed on the removed on version ${version}`,
+				);
 			}
 
 			const { cursor, totalCount } = await getUsersInRolePaginated(roleData._id, roomId, {
@@ -143,16 +148,12 @@ API.v1.addRoute(
 
 API.v1.addRoute(
 	'roles.delete',
-	{ authRequired: true },
+	{ authRequired: true, permissionsRequired: ['access-permissions'] },
 	{
 		async post() {
 			const { bodyParams } = this;
 			if (!isRoleDeleteProps(bodyParams)) {
 				throw new Meteor.Error('error-invalid-role-properties', 'The role properties are invalid.');
-			}
-
-			if (!(await hasPermissionAsync(this.userId, 'access-permissions'))) {
-				throw new Meteor.Error('error-action-not-allowed', 'Accessing permissions is not allowed');
 			}
 
 			const role = await Roles.findOneByIdOrName(bodyParams.roleId);
@@ -165,13 +166,13 @@ API.v1.addRoute(
 				throw new Meteor.Error('error-role-protected', 'Cannot delete a protected role');
 			}
 
-			const existingUsers = await Roles.findUsersInRole(role._id);
-
-			if (existingUsers && (await existingUsers.count()) > 0) {
+			if ((await Roles.countUsersInRole(role._id)) > 0) {
 				throw new Meteor.Error('error-role-in-use', "Cannot delete role because it's in use");
 			}
 
 			await Roles.removeById(role._id);
+
+			void notifyOnRoleChanged(role, 'removed');
 
 			return API.v1.success();
 		},
@@ -180,7 +181,7 @@ API.v1.addRoute(
 
 API.v1.addRoute(
 	'roles.removeUserFromRole',
-	{ authRequired: true },
+	{ authRequired: true, permissionsRequired: ['access-permissions'] },
 	{
 		async post() {
 			const { bodyParams } = this;
@@ -190,19 +191,15 @@ API.v1.addRoute(
 
 			const { roleId, roleName, username, scope } = bodyParams;
 
-			if (!(await hasPermissionAsync(this.userId, 'access-permissions'))) {
-				throw new Meteor.Error('error-not-allowed', 'Accessing permissions is not allowed');
-			}
-
 			if (!roleId) {
 				if (!roleName) {
 					return API.v1.failure('error-invalid-role-properties');
 				}
 
-				apiDeprecationLogger.warn(`Unassigning roles by name is deprecated and will be removed on the next major release of Rocket.Chat`);
+				apiDeprecationLogger.parameter(this.request.route, 'roleName', '7.0.0', this.response);
 			}
 
-			const user = Users.findOneByUsername(username);
+			const user = await Users.findOneByUsername(username);
 
 			if (!user) {
 				throw new Meteor.Error('error-invalid-user', 'There is no user with this username');
@@ -219,13 +216,13 @@ API.v1.addRoute(
 			}
 
 			if (role._id === 'admin') {
-				const adminCount = await (await Roles.findUsersInRole('admin')).count();
+				const adminCount = await Roles.countUsersInRole('admin');
 				if (adminCount === 1) {
 					throw new Meteor.Error('error-admin-required', 'You need to have at least one admin');
 				}
 			}
 
-			await Roles.removeUserRoles(user._id, [role._id], scope);
+			await removeUserFromRolesAsync(user._id, [role._id], scope);
 
 			if (settings.get('UI_DisplayRoles')) {
 				void api.broadcast('user.roleUpdate', {

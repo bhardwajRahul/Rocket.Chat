@@ -1,4 +1,3 @@
-import { Match, check } from 'meteor/check';
 import {
 	isLivechatAnalyticsDepartmentsAmountOfChatsProps,
 	isLivechatAnalyticsDepartmentsAverageServiceTimeProps,
@@ -11,17 +10,17 @@ import {
 } from '@rocket.chat/rest-typings';
 
 import { API } from '../../../../../app/api/server';
-import {
-	findAllRooms,
-	findAllAverageServiceTime,
-	findAllServiceTime,
-	findAllAverageWaitingTime,
-	findAllNumberOfTransferredRooms,
-	findAllNumberOfAbandonedRooms,
-	findPercentageOfAbandonedRooms,
-	findAllAverageOfChatDurationTime,
-} from '../../../../../app/livechat/server/lib/analytics/departments';
 import { getPaginationItems } from '../../../../../app/api/server/helpers/getPaginationItems';
+import {
+	findAllRoomsAsync,
+	findAllAverageServiceTimeAsync,
+	findAllServiceTimeAsync,
+	findAllAverageWaitingTimeAsync,
+	findAllNumberOfTransferredRoomsAsync,
+	findAllNumberOfAbandonedRoomsAsync,
+	findPercentageOfAbandonedRoomsAsync,
+	findAllAverageOfChatDurationTimeAsync,
+} from '../../../../../app/livechat/server/lib/analytics/departments';
 
 API.v1.addRoute(
 	'livechat/analytics/departments/amount-of-chats',
@@ -42,10 +41,10 @@ API.v1.addRoute(
 			}
 			const endDate = new Date(end);
 
-			const { departments, total } = findAllRooms({
+			const { departments, total } = await findAllRoomsAsync({
 				start: startDate,
 				end: endDate,
-				answered: answered && answered === 'true',
+				answered: answered === 'true',
 				departmentId,
 				options: { offset, count },
 			});
@@ -82,7 +81,7 @@ API.v1.addRoute(
 			}
 			const endDate = new Date(end);
 
-			const { departments, total } = findAllAverageServiceTime({
+			const { departments, total } = await findAllAverageServiceTimeAsync({
 				start: startDate,
 				end: endDate,
 				departmentId,
@@ -121,7 +120,7 @@ API.v1.addRoute(
 			}
 			const endDate = new Date(end);
 
-			const { departments, total } = findAllAverageOfChatDurationTime({
+			const { departments, total } = await findAllAverageOfChatDurationTimeAsync({
 				start: startDate,
 				end: endDate,
 				departmentId,
@@ -160,7 +159,7 @@ API.v1.addRoute(
 			}
 			const endDate = new Date(end);
 
-			const { departments, total } = findAllServiceTime({
+			const { departments, total } = await findAllServiceTimeAsync({
 				start: startDate,
 				end: endDate,
 				departmentId,
@@ -189,10 +188,6 @@ API.v1.addRoute(
 			const { start, end } = this.queryParams;
 			const { departmentId } = this.queryParams;
 
-			check(start, String);
-			check(end, String);
-			check(departmentId, Match.Maybe(String));
-
 			if (isNaN(Date.parse(start))) {
 				return API.v1.failure('The "start" query parameter must be a valid date.');
 			}
@@ -203,7 +198,7 @@ API.v1.addRoute(
 			}
 			const endDate = new Date(end);
 
-			const { departments, total } = findAllAverageWaitingTime({
+			const { departments, total } = await findAllAverageWaitingTimeAsync({
 				start: startDate,
 				end: endDate,
 				departmentId,
@@ -242,7 +237,7 @@ API.v1.addRoute(
 			}
 			const endDate = new Date(end);
 
-			const { departments, total } = findAllNumberOfTransferredRooms({
+			const { departments, total } = await findAllNumberOfTransferredRoomsAsync({
 				start: startDate,
 				end: endDate,
 				departmentId,
@@ -281,7 +276,7 @@ API.v1.addRoute(
 			}
 			const endDate = new Date(end);
 
-			const { departments, total } = findAllNumberOfAbandonedRooms({
+			const { departments, total } = await findAllNumberOfAbandonedRoomsAsync({
 				start: startDate,
 				end: endDate,
 				departmentId,
@@ -320,7 +315,7 @@ API.v1.addRoute(
 			}
 			const endDate = new Date(end);
 
-			const { departments, total } = findPercentageOfAbandonedRooms({
+			const { departments, total } = await findPercentageOfAbandonedRoomsAsync({
 				start: startDate,
 				end: endDate,
 				departmentId,

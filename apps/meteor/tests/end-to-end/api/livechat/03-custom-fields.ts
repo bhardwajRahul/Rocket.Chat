@@ -1,6 +1,5 @@
-/* eslint-env mocha */
-
 import { expect } from 'chai';
+import { before, describe, it } from 'mocha';
 import type { Response } from 'supertest';
 
 import { getCredentials, api, request, credentials } from '../../../data/api-data';
@@ -8,9 +7,7 @@ import { createCustomField } from '../../../data/livechat/custom-fields';
 import { createVisitor } from '../../../data/livechat/rooms';
 import { updatePermission, updateSetting } from '../../../data/permissions.helper';
 
-describe('LIVECHAT - custom fields', function () {
-	this.retries(0);
-
+describe('LIVECHAT - custom fields', () => {
 	before((done) => getCredentials(done));
 
 	before(async () => {

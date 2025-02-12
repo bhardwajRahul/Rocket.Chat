@@ -1,15 +1,21 @@
 import { Box } from '@rocket.chat/fuselage';
 import type { ReactElement, ReactNode } from 'react';
-import React from 'react';
 
 import AttachmentDownload from './content/attachments/structure/AttachmentDownload';
 import AttachmentSize from './content/attachments/structure/AttachmentSize';
 import { useCollapse } from './hooks/useCollapse';
 
-type MessageCollapsibleProps = { children?: ReactNode; title?: string; hasDownload?: boolean; link?: string; size?: number };
+type MessageCollapsibleProps = {
+	children?: ReactNode;
+	title?: string;
+	hasDownload?: boolean;
+	link?: string;
+	size?: number;
+	isCollapsed?: boolean;
+};
 
-const MessageCollapsible = ({ children, title, hasDownload, link, size }: MessageCollapsibleProps): ReactElement => {
-	const [collapsed, collapse] = useCollapse(false);
+const MessageCollapsible = ({ children, title, hasDownload, link, size, isCollapsed }: MessageCollapsibleProps): ReactElement => {
+	const [collapsed, collapse] = useCollapse(isCollapsed);
 
 	return (
 		<>

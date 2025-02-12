@@ -1,27 +1,29 @@
-import { Meteor } from 'meteor/meteor';
-import { Match, check } from 'meteor/check';
-import { Accounts } from 'meteor/accounts-base';
-import { DDPRateLimiter } from 'meteor/ddp-rate-limiter';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
 import type { IUser } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Users } from '@rocket.chat/models';
+import { Accounts } from 'meteor/accounts-base';
+import { Match, check } from 'meteor/check';
+import { DDPRateLimiter } from 'meteor/ddp-rate-limiter';
+import { Meteor } from 'meteor/meteor';
 
-import { Users } from '../../app/models/server';
-import { settings } from '../../app/settings/server';
-import { validateEmailDomain, passwordPolicy, RateLimiter } from '../../app/lib/server';
 import { validateInviteToken } from '../../app/invites/server/functions/validateInviteToken';
+import { validateEmailDomain, passwordPolicy, RateLimiter } from '../../app/lib/server';
+import { settings } from '../../app/settings/server';
 import { trim } from '../../lib/utils/stringUtils';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		registerUser(
 			formData:
 				| { email: string; pass: string; username: IUser['username']; name: string; secretURL?: string; reason?: string }
 				| { email?: null },
-		): {
-			token: string;
-			when: Date;
-		};
+		):
+			| {
+					token: string;
+					when: Date;
+			  }
+			| string;
 	}
 }
 
@@ -31,7 +33,7 @@ Meteor.methods<ServerMethods>({
 		const AllowAnonymousWrite = settings.get<boolean>('Accounts_AllowAnonymousWrite');
 		const manuallyApproveNewUsers = settings.get<boolean>('Accounts_ManuallyApproveNewUsers');
 		if (AllowAnonymousRead === true && AllowAnonymousWrite === true && !formData.email) {
-			const userId = Accounts.insertUserDoc(
+			const userId = await Accounts.insertUserDoc(
 				{},
 				{
 					globalRoles: ['anonymous'],
@@ -39,9 +41,9 @@ Meteor.methods<ServerMethods>({
 				},
 			);
 
-			const stampedLoginToken = Accounts._generateStampedLoginToken();
+			const stampedLoginToken = await Accounts._generateStampedLoginToken();
 
-			Accounts._insertLoginToken(userId, stampedLoginToken);
+			await Accounts._insertLoginToken(userId, stampedLoginToken);
 			return stampedLoginToken;
 		}
 		check(
@@ -82,7 +84,7 @@ Meteor.methods<ServerMethods>({
 
 		passwordPolicy.validate(formData.pass);
 
-		validateEmailDomain(formData.email);
+		await validateEmailDomain(formData.email);
 
 		const userData = {
 			email: trim(formData.email.toLowerCase()),
@@ -93,15 +95,7 @@ Meteor.methods<ServerMethods>({
 
 		let userId;
 		try {
-			// Check if user has already been imported and never logged in. If so, set password and let it through
-			const importedUser = Users.findOneByEmailAddress(formData.email);
-
-			if (importedUser?.importIds?.length && !importedUser.lastLogin) {
-				Accounts.setPassword(importedUser._id, userData.password);
-				userId = importedUser._id;
-			} else {
-				userId = Accounts.createUser(userData);
-			}
+			userId = await Accounts.createUserAsync(userData);
 		} catch (e) {
 			if (e instanceof Meteor.Error) {
 				throw e;
@@ -114,11 +108,11 @@ Meteor.methods<ServerMethods>({
 			throw new Meteor.Error(String(e));
 		}
 
-		Users.setName(userId, trim(formData.name));
+		await Users.setName(userId, trim(formData.name));
 
 		const reason = trim(formData.reason);
 		if (manuallyApproveNewUsers && reason) {
-			Users.setReason(userId, reason);
+			await Users.setReason(userId, reason);
 		}
 
 		try {

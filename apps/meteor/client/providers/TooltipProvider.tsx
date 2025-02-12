@@ -1,12 +1,16 @@
 import { useDebouncedState, useMediaQuery } from '@rocket.chat/fuselage-hooks';
 import { TooltipComponent } from '@rocket.chat/ui-client';
 import { TooltipContext } from '@rocket.chat/ui-contexts';
-import type { FC, ReactNode } from 'react';
-import React, { useEffect, useMemo, useRef, memo, useCallback, useState } from 'react';
+import type { ReactNode } from 'react';
+import { useEffect, useMemo, useRef, memo, useCallback, useState } from 'react';
 
-import TooltipPortal from '../components/TooltipPortal';
+import TooltipPortal from '../portals/TooltipPortal';
 
-const TooltipProvider: FC = ({ children }) => {
+type TooltipProviderProps = {
+	children?: ReactNode;
+};
+
+const TooltipProvider = ({ children }: TooltipProviderProps) => {
 	const lastAnchor = useRef<HTMLElement>();
 	const hasHover = !useMediaQuery('(hover: none)');
 
@@ -121,7 +125,7 @@ const TooltipProvider: FC = ({ children }) => {
 		document.body.addEventListener('mouseover', handleMouseOver, {
 			passive: true,
 		});
-		document.body.addEventListener('click', dismissOnClick);
+		document.body.addEventListener('click', dismissOnClick, { capture: true });
 
 		return (): void => {
 			contextValue.close();

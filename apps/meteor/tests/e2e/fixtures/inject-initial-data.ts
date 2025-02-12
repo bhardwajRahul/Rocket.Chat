@@ -7,7 +7,12 @@ import { Users } from './userStates';
 export default async function injectInitialData() {
 	const connection = await MongoClient.connect(constants.URL_MONGODB);
 
-	const usersFixtures = [createUserFixture(Users.user1), createUserFixture(Users.user2), createUserFixture(Users.user3)];
+	const usersFixtures = [
+		createUserFixture(Users.user1),
+		createUserFixture(Users.user2),
+		createUserFixture(Users.user3),
+		createUserFixture(Users.userE2EE),
+	];
 
 	await Promise.all(
 		usersFixtures.map((user) =>
@@ -15,7 +20,13 @@ export default async function injectInitialData() {
 		),
 	);
 
-	await connection.db().collection('users').updateOne({ username: Users.admin.data.username }, { $addToSet: {'services.resume.loginTokens': {when: Users.admin.data.loginExpire, hashedToken: Users.admin.data.hashedToken}} });
+	await connection
+		.db()
+		.collection('users')
+		.updateOne(
+			{ username: Users.admin.data.username },
+			{ $addToSet: { 'services.resume.loginTokens': { when: Users.admin.data.loginExpire, hashedToken: Users.admin.data.hashedToken } } },
+		);
 
 	await Promise.all(
 		[
@@ -51,11 +62,19 @@ export default async function injectInitialData() {
 				_id: 'API_Enable_Rate_Limiter_Dev',
 				value: false,
 			},
+			{
+				_id: 'Accounts_OAuth_Google',
+				value: false,
+			},
+			{
+				_id: 'Livechat_Require_Contact_Verification',
+				value: 'never',
+			},
 		].map((setting) =>
 			connection
 				.db()
 				.collection('rocketchat_settings')
-				.updateOne({ _id: setting._id }, { $set: { value: setting.value } }),
+				.updateOne({ _id: setting._id as any }, { $set: { value: setting.value } }),
 		),
 	);
 

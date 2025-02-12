@@ -1,16 +1,27 @@
-import type { IRoom, IUser } from '@rocket.chat/core-typings';
+import { api, Message } from '@rocket.chat/core-services';
+import type { IDirectMessageRoom, IRoom, IUser } from '@rocket.chat/core-typings';
 import { isDirectMessageRoom } from '@rocket.chat/core-typings';
-import { Messages as MessagesRaw, Rooms, Subscriptions, MatrixBridgedRoom } from '@rocket.chat/models';
-import { api } from '@rocket.chat/core-services';
+import { Rooms, Subscriptions, MatrixBridgedRoom, Users } from '@rocket.chat/models';
 
+import { getFederatedUserByInternalUsername } from './User';
+import { saveRoomTopic } from '../../../../../../app/channel-settings/server';
+import { addUserToRoom } from '../../../../../../app/lib/server/functions/addUserToRoom';
+import { createRoom } from '../../../../../../app/lib/server/functions/createRoom';
+import { removeUserFromRoom } from '../../../../../../app/lib/server/functions/removeUserFromRoom';
+import {
+	notifyOnSubscriptionChanged,
+	notifyOnSubscriptionChangedById,
+	notifyOnSubscriptionChangedByRoomId,
+	notifyOnSubscriptionChangedByRoomIdAndUserId,
+} from '../../../../../../app/lib/server/lib/notifyListener';
+import { settings } from '../../../../../../app/settings/server';
+import { getDefaultSubscriptionPref } from '../../../../../../app/utils/lib/getDefaultSubscriptionPref';
+import { getValidRoomName } from '../../../../../../app/utils/server/lib/getValidRoomName';
+import { syncRoomRolePriorityForUserAndRoom } from '../../../../../lib/roles/syncRoomRolePriority';
 import { DirectMessageFederatedRoom, FederatedRoom } from '../../../domain/FederatedRoom';
 import type { FederatedUser } from '../../../domain/FederatedUser';
-import { getFederatedUserByInternalUsername } from './User';
+import { extractServerNameFromExternalIdentifier } from '../../matrix/converters/room/RoomReceiver';
 import type { ROCKET_CHAT_FEDERATION_ROLES } from '../definitions/FederatedRoomInternalRoles';
-import { addUserToRoom, createRoom, removeUserFromRoom } from '../../../../../../app/lib/server';
-import { Messages } from '../../../../../../app/models/server';
-import { saveRoomTopic } from '../../../../../../app/channel-settings/server';
-import { settings } from '../../../../../../app/settings/server';
 
 type WithRequiredProperty<Type, Key extends keyof Type> = Type & {
 	[Property in Key]-?: Type[Property];
@@ -49,9 +60,24 @@ export class RocketChatRoomAdapter {
 		if (!usernameOrId) {
 			throw new Error('Cannot create a room without a creator');
 		}
-		const { rid, _id } = await createRoom(federatedRoom.getRoomType(), federatedRoom.getDisplayName(), usernameOrId);
+		const roomName = await getValidRoomName(
+			(federatedRoom.getDisplayName() || '')
+				.replace(/[^a-zA-Z0-9 ]/g, '')
+				.trim()
+				.replace(/ /g, '-'),
+		);
+		const owner = await Users.findOneByUsernameIgnoringCase(usernameOrId);
+		if (!owner) {
+			throw new Error('Cannot create a room without a creator');
+		}
+
+		const { rid, _id } = await createRoom(federatedRoom.getRoomType(), roomName, owner);
 		const roomId = rid || _id;
-		await MatrixBridgedRoom.createOrUpdateByLocalRoomId(roomId, federatedRoom.getExternalId());
+		await MatrixBridgedRoom.createOrUpdateByLocalRoomId(
+			roomId,
+			federatedRoom.getExternalId(),
+			extractServerNameFromExternalIdentifier(federatedRoom.getExternalId()),
+		);
 		await Rooms.setAsFederated(roomId);
 
 		return roomId;
@@ -59,9 +85,16 @@ export class RocketChatRoomAdapter {
 
 	public async removeDirectMessageRoom(federatedRoom: FederatedRoom): Promise<void> {
 		const roomId = federatedRoom.getInternalId();
-		await Rooms.removeById(roomId);
-		await Subscriptions.removeByRoomId(roomId);
-		await MatrixBridgedRoom.removeByLocalRoomId(roomId);
+
+		await Promise.all([
+			Rooms.removeById(roomId),
+			Subscriptions.removeByRoomId(roomId, {
+				async onTrash(doc) {
+					void notifyOnSubscriptionChanged(doc, 'removed');
+				},
+			}),
+			MatrixBridgedRoom.removeByLocalRoomId(roomId),
+		]);
 	}
 
 	public async createFederatedRoomForDirectMessage(federatedRoom: DirectMessageFederatedRoom): Promise<string> {
@@ -75,18 +108,30 @@ export class RocketChatRoomAdapter {
 		}
 
 		const readonly = false;
+		const excludeSelf = false;
 		const extraData = undefined;
+
+		const owner = await Users.findOneByUsernameIgnoringCase(usernameOrId);
+		if (!owner) {
+			throw new Error('Cannot create a room without a creator');
+		}
+
 		const { rid, _id } = await createRoom(
 			federatedRoom.getRoomType(),
 			federatedRoom.getDisplayName(),
-			usernameOrId,
+			owner,
 			federatedRoom.getMembersUsernames(),
+			excludeSelf,
 			readonly,
 			extraData,
 			{ creator: creatorId },
 		);
 		const roomId = rid || _id;
-		await MatrixBridgedRoom.createOrUpdateByLocalRoomId(roomId, federatedRoom.getExternalId());
+		await MatrixBridgedRoom.createOrUpdateByLocalRoomId(
+			roomId,
+			federatedRoom.getExternalId(),
+			extractServerNameFromExternalIdentifier(federatedRoom.getExternalId()),
+		);
 		await Rooms.setAsFederated(roomId);
 
 		return roomId;
@@ -111,6 +156,36 @@ export class RocketChatRoomAdapter {
 		await addUserToRoom(federatedRoom.getInternalId(), inviteeUser.getInternalReference(), inviterUser?.getInternalReference());
 	}
 
+	public async addUsersToRoomWhenJoinExternalPublicRoom(federatedUsers: FederatedUser[], federatedRoom: FederatedRoom): Promise<void> {
+		const room = await Rooms.findOneById(federatedRoom.getInternalId());
+		if (!room) {
+			throw new Error('Room not found - addUsersToRoomWhenJoinExternalPublicRoom');
+		}
+		await Promise.all(
+			federatedUsers
+				.map(async (federatedUser) => {
+					const internalUser = await Users.findOneById(federatedUser.getInternalId());
+					if (!internalUser) {
+						return;
+					}
+					const subscription = await Subscriptions.findOneByRoomIdAndUserId(federatedRoom.getInternalId(), internalUser._id);
+					if (subscription) {
+						return;
+					}
+
+					const user = federatedUser.getInternalReference();
+					const { insertedId } = await Subscriptions.createWithRoomAndUser(room, user, {
+						ts: new Date(),
+						...getDefaultSubscriptionPref(user),
+					});
+					if (insertedId) {
+						void notifyOnSubscriptionChangedById(insertedId, 'inserted');
+					}
+				})
+				.filter(Boolean),
+		);
+	}
+
 	public async removeUserFromRoom(federatedRoom: FederatedRoom, affectedUser: FederatedUser, byUser: FederatedUser): Promise<void> {
 		const userHasBeenRemoved = byUser.getInternalId() !== affectedUser.getInternalId();
 		const options = userHasBeenRemoved ? { byUser: byUser.getInternalReference() } : undefined;
@@ -124,32 +199,37 @@ export class RocketChatRoomAdapter {
 	}
 
 	public async updateRoomType(federatedRoom: FederatedRoom): Promise<void> {
-		await Rooms.setRoomTypeById(federatedRoom.getInternalId(), federatedRoom.getRoomType());
-		await Subscriptions.updateAllRoomTypesByRoomId(federatedRoom.getRoomType(), federatedRoom.getRoomType());
+		const rid = federatedRoom.getInternalId();
+		const roomType = federatedRoom.getRoomType();
+
+		await Rooms.setRoomTypeById(rid, roomType);
+		await Subscriptions.updateAllRoomTypesByRoomId(rid, roomType);
+
+		void notifyOnSubscriptionChangedByRoomId(rid);
 	}
 
 	public async updateDisplayRoomName(federatedRoom: FederatedRoom, federatedUser: FederatedUser): Promise<void> {
-		await Rooms.setFnameById(federatedRoom.getInternalId(), federatedRoom.getDisplayName());
-		await Subscriptions.updateNameAndFnameByRoomId(
-			federatedRoom.getInternalId(),
-			federatedRoom.getName() || '',
-			federatedRoom.getDisplayName() || '',
-		);
-		await MessagesRaw.createWithTypeRoomIdMessageUserAndUnread(
-			'r',
-			federatedRoom.getInternalId(),
-			federatedRoom.getDisplayName() || '',
-			federatedUser.getInternalReference() as unknown as Required<IUser>, // TODO fix type
-		);
+		const rid = federatedRoom.getInternalId();
+		const roomName = federatedRoom.getName() || '';
+		const displayName = federatedRoom.getDisplayName() || '';
+		const internalReference = federatedUser.getInternalReference();
+
+		await Rooms.setFnameById(rid, displayName);
+		await Subscriptions.updateNameAndFnameByRoomId(rid, roomName, displayName);
+		await Message.saveSystemMessage('r', rid, displayName, internalReference);
+
+		void notifyOnSubscriptionChangedByRoomId(rid);
 	}
 
 	public async updateRoomName(federatedRoom: FederatedRoom): Promise<void> {
-		await Rooms.setRoomNameById(federatedRoom.getInternalId(), federatedRoom.getName());
-		await Subscriptions.updateNameAndFnameByRoomId(
-			federatedRoom.getInternalId(),
-			federatedRoom.getName() || '',
-			federatedRoom.getDisplayName() || '',
-		);
+		const rid = federatedRoom.getInternalId();
+		const roomName = federatedRoom.getName() || '';
+		const displayName = federatedRoom.getDisplayName() || '';
+
+		await Rooms.setRoomNameById(rid, roomName);
+		await Subscriptions.updateNameAndFnameByRoomId(rid, roomName, displayName);
+
+		void notifyOnSubscriptionChangedByRoomId(rid);
 	}
 
 	public async updateRoomTopic(federatedRoom: FederatedRoom, federatedUser: FederatedUser): Promise<void> {
@@ -160,7 +240,7 @@ export class RocketChatRoomAdapter {
 		);
 	}
 
-	private async createFederatedRoomInstance(externalRoomId: string, room: IRoom): Promise<FederatedRoom> {
+	private async createFederatedRoomInstance<T extends IRoom | IDirectMessageRoom>(externalRoomId: string, room: T): Promise<FederatedRoom> {
 		if (isDirectMessageRoom(room)) {
 			const members = (await Promise.all(
 				(room.usernames || []).map((username) => getFederatedUserByInternalUsername(username)).filter(Boolean),
@@ -172,7 +252,11 @@ export class RocketChatRoomAdapter {
 	}
 
 	public async updateFederatedRoomByInternalRoomId(internalRoomId: string, externalRoomId: string): Promise<void> {
-		await MatrixBridgedRoom.createOrUpdateByLocalRoomId(internalRoomId, externalRoomId);
+		await MatrixBridgedRoom.createOrUpdateByLocalRoomId(
+			internalRoomId,
+			externalRoomId,
+			extractServerNameFromExternalIdentifier(externalRoomId),
+		);
 		await Rooms.setAsFederated(internalRoomId);
 	}
 
@@ -199,12 +283,15 @@ export class RocketChatRoomAdapter {
 		rolesToRemove: ROCKET_CHAT_FEDERATION_ROLES[];
 		notifyChannel: boolean;
 	}): Promise<void> {
-		const subscription = await Subscriptions.findOneByRoomIdAndUserId(federatedRoom.getInternalId(), targetFederatedUser.getInternalId(), {
-			projection: { roles: 1 },
-		});
+		const uid = targetFederatedUser.getInternalId();
+		const rid = federatedRoom.getInternalId();
+
+		const subscription = await Subscriptions.findOneByRoomIdAndUserId(rid, uid, { projection: { roles: 1 } });
+
 		if (!subscription) {
 			return;
 		}
+
 		const { roles: currentRoles = [] } = subscription;
 		const toAdd = rolesToAdd.filter((role) => !currentRoles.includes(role));
 		const toRemove = rolesToRemove.filter((role) => currentRoles.includes(role));
@@ -212,40 +299,51 @@ export class RocketChatRoomAdapter {
 			_id: fromUser.getInternalId(),
 			username: fromUser.getUsername(),
 		};
+
 		if (toAdd.length > 0) {
-			await Subscriptions.addRolesByUserId(targetFederatedUser.getInternalId(), toAdd, federatedRoom.getInternalId());
+			const addRolesResponse = await Subscriptions.addRolesByUserId(uid, toAdd, rid);
+			if (addRolesResponse.modifiedCount) {
+				void notifyOnSubscriptionChangedByRoomIdAndUserId(rid, uid);
+			}
+
 			if (notifyChannel) {
 				await Promise.all(
 					toAdd.map((role) =>
-						Messages.createSubscriptionRoleAddedWithRoomIdAndUser(
-							federatedRoom.getInternalId(),
-							targetFederatedUser.getInternalReference(),
-							{
-								u: whoDidTheChange,
-								role,
-							},
+						Message.saveSystemMessage(
+							'subscription-role-added',
+							rid,
+							targetFederatedUser.getInternalReference().username || '',
+							whoDidTheChange,
+							{ role },
 						),
 					),
 				);
 			}
 		}
+
 		if (toRemove.length > 0) {
-			await Subscriptions.removeRolesByUserId(targetFederatedUser.getInternalId(), toRemove, federatedRoom.getInternalId());
+			const removeRolesResponse = await Subscriptions.removeRolesByUserId(uid, toRemove, rid);
+			if (removeRolesResponse.modifiedCount) {
+				void notifyOnSubscriptionChangedByRoomIdAndUserId(rid, uid);
+			}
+
 			if (notifyChannel) {
 				await Promise.all(
 					toRemove.map((role) =>
-						Messages.createSubscriptionRoleRemovedWithRoomIdAndUser(
-							federatedRoom.getInternalId(),
-							targetFederatedUser.getInternalReference(),
-							{
-								u: whoDidTheChange,
-								role,
-							},
+						Message.saveSystemMessage(
+							'subscription-role-removed',
+							rid,
+							targetFederatedUser.getInternalReference().username || '',
+							whoDidTheChange,
+							{ role },
 						),
 					),
 				);
 			}
 		}
+
+		await syncRoomRolePriorityForUserAndRoom(uid, rid);
+
 		if (settings.get('UI_DisplayRoles')) {
 			this.notifyUIAboutRoomRolesChange(targetFederatedUser, federatedRoom, toAdd, toRemove);
 		}
@@ -269,7 +367,12 @@ export class RocketChatRoomAdapter {
 		federatedRoom: FederatedRoom,
 		role: string,
 		action: 'added' | 'removed',
-	): Record<string, any> {
+	): {
+		type: 'added' | 'removed' | 'changed';
+		_id: string;
+		u?: { _id: IUser['_id']; username: IUser['username']; name: IUser['name'] };
+		scope?: string;
+	} {
 		return {
 			type: action,
 			_id: role,

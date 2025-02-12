@@ -1,13 +1,13 @@
-import { Meteor } from 'meteor/meteor';
 import type { IRole } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
 import { Roles } from '@rocket.chat/models';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
+import { Meteor } from 'meteor/meteor';
 import type { DeleteResult } from 'mongodb';
 
+import { methodDeprecationLogger } from '../../../lib/server/lib/deprecationWarningLogger';
 import { hasPermissionAsync } from '../functions/hasPermission';
-import { apiDeprecationLogger } from '../../../lib/server/lib/deprecationWarningLogger';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		'authorization:deleteRole'(roleId: IRole['_id'] | IRole['name']): Promise<DeleteResult>;
@@ -42,7 +42,12 @@ Meteor.methods<ServerMethods>({
 				});
 			}
 
-			apiDeprecationLogger.warn(`Calling authorization:deleteRole with role names will be deprecated in future versions of Rocket.Chat`);
+			methodDeprecationLogger.deprecatedParameterUsage(
+				'authorization:deleteRole',
+				'role',
+				'7.0.0',
+				({ parameter, method, version }) => `Calling ${method} with ${parameter} names is deprecated and will be removed ${version}`,
+			);
 		}
 
 		if (role.protected) {
@@ -51,7 +56,7 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		const users = await (await Roles.findUsersInRole(role._id)).count();
+		const users = await Roles.countUsersInRole(role._id);
 
 		if (users > 0) {
 			throw new Meteor.Error('error-role-in-use', "Cannot delete role because it's in use", {

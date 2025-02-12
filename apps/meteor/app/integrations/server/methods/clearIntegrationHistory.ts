@@ -1,11 +1,11 @@
-import { Meteor } from 'meteor/meteor';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
 import { Integrations, IntegrationHistory } from '@rocket.chat/models';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
+import { Meteor } from 'meteor/meteor';
 
 import { hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
 import notifications from '../../../notifications/server/lib/Notifications';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		clearIntegrationHistory(integrationId: string): Promise<boolean>;
@@ -41,9 +41,10 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
+		// Don't sending to IntegrationHistory listener since it don't waits for 'removed' events.
 		await IntegrationHistory.removeByIntegrationId(integrationId);
 
-		notifications.streamIntegrationHistory.emit(integrationId, { type: 'removed' });
+		notifications.streamIntegrationHistory.emit(integrationId, { type: 'removed', id: integrationId });
 
 		return true;
 	},

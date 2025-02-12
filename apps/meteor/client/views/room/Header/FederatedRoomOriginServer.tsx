@@ -1,7 +1,7 @@
-import { Header } from '@rocket.chat/ui-client';
 import type { ReactElement } from 'react';
-import React, { useMemo } from 'react';
+import { useMemo } from 'react';
 
+import { HeaderTag, HeaderTagIcon } from '../../../components/Header';
 import type { IRoomWithFederationOriginalName } from '../contexts/RoomContext';
 
 type FederatedRoomProps = {
@@ -14,12 +14,10 @@ const FederatedRoomOriginServer = ({ room }: FederatedRoomProps): ReactElement |
 		return null;
 	}
 	return (
-		<Header.Tag data-qa='federated-origin-server-name'>
-			<>
-				<Header.Tag.Icon icon={{ name: 'globe' }} />
-				{originServerName}
-			</>
-		</Header.Tag>
+		<HeaderTag data-qa='federated-origin-server-name'>
+			<HeaderTagIcon icon={{ name: 'globe' }} />
+			{originServerName}
+		</HeaderTag>
 	);
 };
 

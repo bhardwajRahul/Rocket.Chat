@@ -1,60 +1,40 @@
-import { Box, Button, ButtonGroup, Skeleton, Throbber, InputBox } from '@rocket.chat/fuselage';
-import { useEndpoint, useToastMessageDispatch, useTranslation } from '@rocket.chat/ui-contexts';
+import { Box } from '@rocket.chat/fuselage';
+import { useEndpoint } from '@rocket.chat/ui-contexts';
 import { useQuery } from '@tanstack/react-query';
 import type { ReactElement } from 'react';
-import React, { useCallback } from 'react';
+import { useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import EditOauthApp from './EditOauthApp';
+import { FormSkeleton } from '../../../components/Skeleton';
 
 const EditOauthAppWithData = ({ _id, ...props }: { _id: string }): ReactElement => {
-	const t = useTranslation();
+	const { t } = useTranslation();
 
 	const getOauthApps = useEndpoint('GET', '/v1/oauth-apps.get');
 
-	const dispatchToastMessage = useToastMessageDispatch();
-
-	const { data, isLoading, error, refetch } = useQuery(
-		['oauth-apps', _id],
-		async () => {
+	const { data, isPending, error, refetch } = useQuery({
+		queryKey: ['oauth-apps', _id],
+		queryFn: async () => {
 			const oauthApps = await getOauthApps({ _id });
 			return oauthApps;
 		},
-		{
-			onError: (error) => dispatchToastMessage({ type: 'error', message: error }),
+		meta: {
+			apiErrorToastMessage: true,
 		},
-	);
+	});
 
 	const onChange = useCallback(() => {
 		refetch();
 	}, [refetch]);
 
-	if (isLoading) {
-		return (
-			<Box pb='x20' maxWidth='x600' w='full' alignSelf='center'>
-				<Skeleton mbs='x8' />
-				<InputBox.Skeleton w='full' />
-				<Skeleton mbs='x8' />
-				<InputBox.Skeleton w='full' />
-				<ButtonGroup stretch w='full' mbs='x8'>
-					<Button disabled>
-						<Throbber inheritColor />
-					</Button>
-					<Button primary disabled>
-						<Throbber inheritColor />
-					</Button>
-				</ButtonGroup>
-				<ButtonGroup stretch w='full' mbs='x8'>
-					<Button danger disabled>
-						<Throbber inheritColor />
-					</Button>
-				</ButtonGroup>
-			</Box>
-		);
+	if (isPending) {
+		return <FormSkeleton pi={20} />;
 	}
 
 	if (error || !data || !_id) {
 		return (
-			<Box fontScale='h2' pb='x20'>
+			<Box fontScale='h2' pb={20}>
 				{t('error-application-not-found')}
 			</Box>
 		);
