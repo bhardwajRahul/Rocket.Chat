@@ -1,14 +1,14 @@
 import { useRouteParameter, useRoute, usePermission } from '@rocket.chat/ui-contexts';
 import type { ReactElement } from 'react';
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 
-import PageSkeleton from '../../components/PageSkeleton';
-import NotAuthorizedPage from '../notAuthorized/NotAuthorizedPage';
 import AppDetailsPage from './AppDetailsPage';
 import AppInstallPage from './AppInstallPage';
 import AppsPage from './AppsPage';
-import AppsProvider from './AppsProvider';
 import BannerEnterpriseTrialEnded from './components/BannerEnterpriseTrialEnded';
+import PageSkeleton from '../../components/PageSkeleton';
+import AppsProvider from '../../providers/AppsProvider';
+import NotAuthorizedPage from '../notAuthorized/NotAuthorizedPage';
 
 const AppsRoute = (): ReactElement => {
 	const [isLoading, setLoading] = useState(true);
@@ -19,6 +19,7 @@ const AppsRoute = (): ReactElement => {
 	const page = useRouteParameter('page');
 
 	const isAdminUser = usePermission('manage-apps');
+	const canAccessMarketplace = usePermission('access-marketplace');
 
 	if (!page) marketplaceRoute.push({ context, page: 'list' });
 
@@ -39,6 +40,14 @@ const AppsRoute = (): ReactElement => {
 			mounted = false;
 		};
 	}, [marketplaceRoute, context]);
+
+	if (
+		(context === 'explore' || context === 'installed' || context === 'private' || context === 'premium') &&
+		!canAccessMarketplace &&
+		!isAdminUser
+	) {
+		return <NotAuthorizedPage />;
+	}
 
 	if ((context === 'requested' || page === 'install') && !isAdminUser) return <NotAuthorizedPage />;
 

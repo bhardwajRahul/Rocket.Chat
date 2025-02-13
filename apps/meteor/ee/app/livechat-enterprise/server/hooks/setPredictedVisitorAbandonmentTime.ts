@@ -1,42 +1,46 @@
-import { isEditedMessage, isOmnichannelRoom } from '@rocket.chat/core-typings';
+import type { IMessage } from '@rocket.chat/core-typings';
+import { isEditedMessage, isMessageFromVisitor } from '@rocket.chat/core-typings';
+import moment from 'moment';
 
-import { callbacks } from '../../../../../lib/callbacks';
+import { markRoomResponded } from '../../../../../app/livechat/server/hooks/markRoomResponded';
 import { settings } from '../../../../../app/settings/server';
+import { callbacks } from '../../../../../lib/callbacks';
 import { setPredictedVisitorAbandonmentTime } from '../lib/Helper';
 
+function shouldSaveInactivity(message: IMessage): boolean {
+	if (message.t || isEditedMessage(message) || isMessageFromVisitor(message)) {
+		return false;
+	}
+
+	const abandonedRoomsAction = settings.get('Livechat_abandoned_rooms_action');
+	const visitorInactivityTimeout = settings.get<number>('Livechat_visitor_inactivity_timeout');
+
+	if (!abandonedRoomsAction || abandonedRoomsAction === 'none' || visitorInactivityTimeout <= 0) {
+		return false;
+	}
+
+	return true;
+}
+
+callbacks.remove('afterOmnichannelSaveMessage', 'markRoomResponded');
+
 callbacks.add(
-	'afterSaveMessage',
-	async function (message, room) {
-		if (
-			!settings.get('Livechat_abandoned_rooms_action') ||
-			settings.get('Livechat_abandoned_rooms_action') === 'none' ||
-			settings.get<number>('Livechat_visitor_inactivity_timeout') <= 0
-		) {
-			return message;
-		}
-		// skips this callback if the message was edited
-		if (isEditedMessage(message)) {
+	'afterOmnichannelSaveMessage',
+	async (message, { room, roomUpdater }) => {
+		const responseBy = await markRoomResponded(message, room, roomUpdater);
+
+		if (!shouldSaveInactivity(message)) {
 			return message;
 		}
 
-		if (!isOmnichannelRoom(room)) {
-			return message;
+		if (!responseBy) {
+			return;
 		}
 
-		// message valid only if it is a livechat room
-		if (!(typeof room.t !== 'undefined' && room.t === 'l' && room.v && room.v.token)) {
-			return message;
+		if (moment(responseBy.firstResponseTs).isSame(moment(message.ts))) {
+			await setPredictedVisitorAbandonmentTime({ ...room, responseBy }, roomUpdater);
 		}
-		// if the message has a type means it is a special message (like the closing comment), so skip it
-		if (message.t) {
-			return message;
-		}
-		const sentByAgent = !message.token;
-		if (sentByAgent) {
-			await setPredictedVisitorAbandonmentTime(room);
-		}
-		return message;
 	},
 	callbacks.priority.MEDIUM,
 	'save-visitor-inactivity',
-); // This hook priority should always be less than the priority of hook "save-last-visitor-message-timestamp" bcs, the room.v.lastMessage property set there is being used here for determining visitor abandonment
+);

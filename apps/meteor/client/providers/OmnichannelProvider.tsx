@@ -1,25 +1,27 @@
-import type {
-	IOmnichannelAgent,
-	OmichannelRoutingConfig,
+import {
+	type IOmnichannelAgent,
+	type OmichannelRoutingConfig,
 	OmnichannelSortingMechanismSettingType,
-	ILivechatInquiryRecord,
+	type ILivechatInquiryRecord,
+	LivechatInquiryStatus,
 } from '@rocket.chat/core-typings';
 import { useSafely } from '@rocket.chat/fuselage-hooks';
 import { useUser, useSetting, usePermission, useMethod, useEndpoint, useStream } from '@rocket.chat/ui-contexts';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { FC } from 'react';
-import React, { useState, useEffect, useMemo, useCallback, memo, useRef } from 'react';
+import type { ReactNode } from 'react';
+import { useState, useEffect, useMemo, useCallback, memo, useRef } from 'react';
 
 import { LivechatInquiry } from '../../app/livechat/client/collections/LivechatInquiry';
 import { initializeLivechatInquiryStream } from '../../app/livechat/client/lib/stream/queueManager';
 import { getOmniChatSortQuery } from '../../app/livechat/lib/inquiries';
-import { Notifications } from '../../app/notifications/client';
 import { KonchatNotification } from '../../app/ui/client/lib/KonchatNotification';
-import { useHasLicenseModule } from '../../ee/client/hooks/useHasLicenseModule';
 import { ClientLogger } from '../../lib/ClientLogger';
 import type { OmnichannelContextValue } from '../contexts/OmnichannelContext';
 import { OmnichannelContext } from '../contexts/OmnichannelContext';
+import { useHasLicenseModule } from '../hooks/useHasLicenseModule';
+import { useOmnichannelContinuousSoundNotification } from '../hooks/useOmnichannelContinuousSoundNotification';
 import { useReactiveValue } from '../hooks/useReactiveValue';
+import { useShouldPreventAction } from '../hooks/useShouldPreventAction';
 
 const emptyContextValue: OmnichannelContextValue = {
 	inquiries: { enabled: false },
@@ -27,6 +29,7 @@ const emptyContextValue: OmnichannelContextValue = {
 	isEnterprise: false,
 	agentAvailable: false,
 	showOmnichannelQueueLink: false,
+	isOverMacLimit: false,
 	livechatPriorities: {
 		enabled: false,
 		data: [],
@@ -35,12 +38,21 @@ const emptyContextValue: OmnichannelContextValue = {
 	},
 };
 
-const OmnichannelProvider: FC = ({ children }) => {
-	const omniChannelEnabled = useSetting('Livechat_enabled') as boolean;
-	const omnichannelRouting = useSetting('Livechat_Routing_Method');
-	const showOmnichannelQueueLink = useSetting('Livechat_show_queue_list_link') as boolean;
-	const omnichannelPoolMaxIncoming = useSetting('Livechat_guest_pool_max_number_incoming_livechats_displayed') as number;
-	const omnichannelSortingMechanism = useSetting('Omnichannel_sorting_mechanism') as OmnichannelSortingMechanismSettingType;
+type OmnichannelProviderProps = {
+	children?: ReactNode;
+};
+
+const OmnichannelProvider = ({ children }: OmnichannelProviderProps) => {
+	const omniChannelEnabled = useSetting('Livechat_enabled', true);
+	const omnichannelRouting = useSetting('Livechat_Routing_Method', 'Auto_Selection');
+	const showOmnichannelQueueLink = useSetting('Livechat_show_queue_list_link', false);
+	const omnichannelPoolMaxIncoming = useSetting('Livechat_guest_pool_max_number_incoming_livechats_displayed', 0);
+	const omnichannelSortingMechanism = useSetting<OmnichannelSortingMechanismSettingType>(
+		'Omnichannel_sorting_mechanism',
+		OmnichannelSortingMechanismSettingType.Timestamp,
+	);
+
+	const lastQueueSize = useRef(0);
 
 	const loggerRef = useRef(new ClientLogger('OmnichannelProvider'));
 	const hasAccess = usePermission('view-l-room');
@@ -53,7 +65,6 @@ const OmnichannelProvider: FC = ({ children }) => {
 	const getRoutingConfig = useMethod('livechat:getRoutingConfig');
 
 	const [routeConfig, setRouteConfig] = useSafely(useState<OmichannelRoutingConfig | undefined>(undefined));
-	const [queueNotification, setQueueNotification] = useState(new Set());
 
 	const accessible = hasAccess && omniChannelEnabled;
 	const iceServersSetting: any = useSetting('WebRTC_Servers');
@@ -63,15 +74,20 @@ const OmnichannelProvider: FC = ({ children }) => {
 	const subscribe = useStream('notify-logged');
 	const queryClient = useQueryClient();
 	const isPrioritiesEnabled = isEnterprise && accessible;
+	const enabled = accessible && !!user && !!routeConfig;
 
 	const {
 		data: { priorities = [] } = {},
-		isInitialLoading: isLoadingPriorities,
+		isLoading: isLoadingPriorities,
 		isError: isErrorPriorities,
-	} = useQuery(['/v1/livechat/priorities'], () => getPriorities({ sort: JSON.stringify({ sortItem: 1 }) }), {
+	} = useQuery({
+		queryKey: ['/v1/livechat/priorities'],
+		queryFn: () => getPriorities({ sort: JSON.stringify({ sortItem: 1 }) }),
 		staleTime: Infinity,
 		enabled: isPrioritiesEnabled,
 	});
+
+	const isOverMacLimit = useShouldPreventAction('monthlyActiveContacts');
 
 	useEffect(() => {
 		if (!isPrioritiesEnabled) {
@@ -79,7 +95,9 @@ const OmnichannelProvider: FC = ({ children }) => {
 		}
 
 		return subscribe('omnichannel.priority-changed', () => {
-			queryClient.invalidateQueries(['/v1/livechat/priorities']);
+			queryClient.invalidateQueries({
+				queryKey: ['/v1/livechat/priorities'],
+			});
 		});
 	}, [isPrioritiesEnabled, queryClient, subscribe]);
 
@@ -102,10 +120,10 @@ const OmnichannelProvider: FC = ({ children }) => {
 		}
 	}, [accessible, getRoutingConfig, iceServersSetting, omnichannelRouting, setRouteConfig, voipCallAvailable]);
 
-	const enabled = accessible && !!user && !!routeConfig;
 	const manuallySelected =
 		enabled && canViewOmnichannelQueue && !!routeConfig && routeConfig.showQueue && !routeConfig.autoAssignAgent && agentAvailable;
 
+	const streamNotifyUser = useStream('notify-user');
 	useEffect(() => {
 		if (!manuallySelected) {
 			return;
@@ -116,12 +134,11 @@ const OmnichannelProvider: FC = ({ children }) => {
 		};
 
 		initializeLivechatInquiryStream(user?._id);
-		Notifications.onUser('departmentAgentData', handleDepartmentAgentData);
-
-		return (): void => {
-			Notifications.unUser('departmentAgentData', handleDepartmentAgentData);
-		};
-	}, [manuallySelected, user?._id]);
+		if (!user?._id) {
+			return;
+		}
+		return streamNotifyUser(`${user._id}/departmentAgentData`, handleDepartmentAgentData);
+	}, [manuallySelected, streamNotifyUser, user?._id]);
 
 	const queue = useReactiveValue<ILivechatInquiryRecord[] | undefined>(
 		useCallback(() => {
@@ -130,25 +147,23 @@ const OmnichannelProvider: FC = ({ children }) => {
 			}
 
 			return LivechatInquiry.find(
-				{
-					status: 'queued',
-					$or: [{ defaultAgent: { $exists: false } }, { 'defaultAgent.agentId': user?._id }],
-				},
+				{ status: LivechatInquiryStatus.QUEUED },
 				{
 					sort: getOmniChatSortQuery(omnichannelSortingMechanism),
 					limit: omnichannelPoolMaxIncoming,
 				},
 			).fetch();
-		}, [manuallySelected, omnichannelPoolMaxIncoming, omnichannelSortingMechanism, user?._id]),
+		}, [manuallySelected, omnichannelPoolMaxIncoming, omnichannelSortingMechanism]),
 	);
 
-	queue?.map(({ rid }) => {
-		if (queueNotification.has(rid)) {
-			return;
+	useEffect(() => {
+		if (lastQueueSize.current < (queue?.length ?? 0)) {
+			KonchatNotification.newRoom();
 		}
-		setQueueNotification((prev) => new Set([...prev, rid]));
-		return KonchatNotification.newRoom(rid);
-	});
+		lastQueueSize.current = queue?.length ?? 0;
+	}, [queue?.length]);
+
+	useOmnichannelContinuousSoundNotification(queue ?? []);
 
 	const contextValue = useMemo<OmnichannelContextValue>(() => {
 		if (!enabled) {
@@ -171,6 +186,7 @@ const OmnichannelProvider: FC = ({ children }) => {
 				voipCallAvailable,
 				routeConfig,
 				livechatPriorities,
+				isOverMacLimit,
 			};
 		}
 
@@ -185,10 +201,11 @@ const OmnichannelProvider: FC = ({ children }) => {
 				? {
 						enabled: true,
 						queue,
-				  }
+					}
 				: { enabled: false },
 			showOmnichannelQueueLink: showOmnichannelQueueLink && !!agentAvailable,
 			livechatPriorities,
+			isOverMacLimit,
 		};
 	}, [
 		enabled,
@@ -203,6 +220,7 @@ const OmnichannelProvider: FC = ({ children }) => {
 		routeConfig,
 		queue,
 		showOmnichannelQueueLink,
+		isOverMacLimit,
 	]);
 
 	return <OmnichannelContext.Provider children={children} value={contextValue} />;

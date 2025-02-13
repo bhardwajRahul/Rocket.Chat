@@ -11,7 +11,7 @@ type CMSPageProps = {
 
 const CMSPage = ({ page }: CMSPageProps): ReactElement => {
 	const t = useTranslation();
-	const pageContent = useSetting(page) as string;
+	const pageContent = useSetting(page, '');
 
 	const customLogo = useAssetWithDarkModePath('logo');
 	const customBackground = useAssetWithDarkModePath('background');
@@ -23,7 +23,7 @@ const CMSPage = ({ page }: CMSPageProps): ReactElement => {
 		>
 			<VerticalWizardLayoutTitle>{t(page)}</VerticalWizardLayoutTitle>
 			<VerticalWizardLayoutForm>
-				<Box p='x32'>
+				<Box p={32}>
 					<IconButton title={t('Back')} icon='arrow-back' onClick={() => window.history.back()} style={{ float: 'right' }} />
 					<Box withRichContent dangerouslySetInnerHTML={{ __html: pageContent }} />
 				</Box>

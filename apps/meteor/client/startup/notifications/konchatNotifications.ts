@@ -1,84 +1,47 @@
-import type { ISubscription, IUser } from '@rocket.chat/core-typings';
-import { FlowRouter } from 'meteor/kadira:flow-router';
+import type { IUser, ICalendarNotification } from '@rocket.chat/core-typings';
 import { Meteor } from 'meteor/meteor';
 import { Tracker } from 'meteor/tracker';
+import { lazy } from 'react';
 
-import { CachedChatSubscription } from '../../../app/models/client';
-import { Notifications } from '../../../app/notifications/client';
-import { readMessage } from '../../../app/ui-utils/client';
-import { KonchatNotification } from '../../../app/ui/client/lib/KonchatNotification';
-import type { NotificationEvent } from '../../../app/ui/client/lib/KonchatNotification';
+import { settings } from '../../../app/settings/client';
 import { getUserPreference } from '../../../app/utils/client';
-import { RoomManager } from '../../lib/RoomManager';
-import { fireGlobalEvent } from '../../lib/utils/fireGlobalEvent';
-import { isLayoutEmbedded } from '../../lib/utils/isLayoutEmbedded';
+import { sdk } from '../../../app/utils/client/lib/SDKClient';
+import { imperativeModal } from '../../lib/imperativeModal';
 
-const notifyNewRoom = async (sub: ISubscription): Promise<void> => {
-	const user = (await Meteor.userAsync()) as IUser | null;
-	if (!user || user.status === 'busy') {
-		return;
-	}
-
-	if ((!FlowRouter.getParam('name') || FlowRouter.getParam('name') !== sub.name) && !sub.ls && sub.alert === true) {
-		KonchatNotification.newRoom(sub.rid);
-	}
-};
-
-function notifyNewMessageAudio(rid?: string): void {
-	// This logic is duplicated in /client/startup/unread.coffee.
-	const hasFocus = readMessage.isEnable();
-	const messageIsInOpenedRoom = RoomManager.opened === rid;
-	const muteFocusedConversations = getUserPreference(Meteor.userId(), 'muteFocusedConversations');
-
-	if (isLayoutEmbedded()) {
-		if (!hasFocus && messageIsInOpenedRoom) {
-			// Play a notification sound
-			void KonchatNotification.newMessage(rid);
-		}
-	} else if (!hasFocus || !messageIsInOpenedRoom || !muteFocusedConversations) {
-		// Play a notification sound
-		void KonchatNotification.newMessage(rid);
-	}
-}
+const OutlookCalendarEventModal = lazy(() => import('../../views/outlookCalendar/OutlookCalendarEventModal'));
 
 Meteor.startup(() => {
-	Tracker.autorun(() => {
-		if (!Meteor.userId()) {
+	const notifyUserCalendar = async function (notification: ICalendarNotification): Promise<void> {
+		const user = Meteor.user() as IUser | null;
+		if (!user || user.status === 'busy') {
 			return;
 		}
 
-		Notifications.onUser('notification', (notification: NotificationEvent) => {
-			const openedRoomId = ['channel', 'group', 'direct'].includes(FlowRouter.getRouteName()) ? RoomManager.opened : undefined;
+		const requireInteraction = getUserPreference<boolean>(Meteor.userId(), 'desktopNotificationRequireInteraction');
 
-			// This logic is duplicated in /client/startup/unread.coffee.
-			const hasFocus = readMessage.isEnable();
-			const messageIsInOpenedRoom = openedRoomId === notification.payload.rid;
+		const n = new Notification(notification.title, {
+			body: notification.text,
+			tag: notification.payload._id,
+			silent: true,
+			requireInteraction,
+		} as NotificationOptions);
 
-			fireGlobalEvent('notification', {
-				notification,
-				fromOpenedRoom: messageIsInOpenedRoom,
-				hasFocus,
+		n.onclick = function () {
+			this.close();
+			window.focus();
+			imperativeModal.open({
+				component: OutlookCalendarEventModal,
+				props: { id: notification.payload._id, onClose: imperativeModal.close, onCancel: imperativeModal.close },
 			});
+		};
+	};
 
-			if (isLayoutEmbedded()) {
-				if (!hasFocus && messageIsInOpenedRoom) {
-					// Show a notification.
-					KonchatNotification.showDesktop(notification);
-				}
-			} else if (!hasFocus || !messageIsInOpenedRoom) {
-				// Show a notification.
-				KonchatNotification.showDesktop(notification);
-			}
+	Tracker.autorun(() => {
+		if (!Meteor.userId() || !settings.get('Outlook_Calendar_Enabled')) {
+			sdk.stop('notify-user', `${Meteor.userId()}/calendar`);
+			return;
+		}
 
-			notifyNewMessageAudio(notification.payload.rid);
-		});
-
-		CachedChatSubscription.on('changed', (sub): void => {
-			void notifyNewRoom(sub);
-		});
-
-		Notifications.onUser('subscriptions-changed', (_action: 'changed' | 'removed', sub: ISubscription) => {
-			void notifyNewRoom(sub);
-		});
+		sdk.stream('notify-user', [`${Meteor.userId()}/calendar`], notifyUserCalendar);
 	});
 });

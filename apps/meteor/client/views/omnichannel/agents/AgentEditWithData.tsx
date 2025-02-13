@@ -1,47 +1,60 @@
+import type { ILivechatAgent } from '@rocket.chat/core-typings';
 import { Box } from '@rocket.chat/fuselage';
-import { useEndpoint, useTranslation } from '@rocket.chat/ui-contexts';
+import { useEndpoint } from '@rocket.chat/ui-contexts';
 import { useQuery } from '@tanstack/react-query';
 import type { ReactElement } from 'react';
-import React from 'react';
+import { useTranslation } from 'react-i18next';
 
-import { FormSkeleton } from '../../../components/Skeleton';
 import AgentEdit from './AgentEdit';
+import { FormSkeleton } from '../../../components/Skeleton';
 
-type AgentEditWithDataProps = {
-	uid: string;
-	reload: () => void;
-};
+const AgentEditWithData = ({ uid }: { uid: ILivechatAgent['_id'] }): ReactElement => {
+	const { t } = useTranslation();
 
-const AgentEditWithData = ({ uid, reload }: AgentEditWithDataProps): ReactElement => {
-	const t = useTranslation();
-	const getDepartments = useEndpoint('GET', '/v1/livechat/department');
-
-	const getAgent = useEndpoint('GET', '/v1/livechat/users/agent/:_id', { _id: uid });
-
+	const getAvailableDepartments = useEndpoint('GET', '/v1/livechat/department');
+	const getAgentById = useEndpoint('GET', '/v1/livechat/users/agent/:_id', { _id: uid });
 	const getAgentDepartments = useEndpoint('GET', '/v1/livechat/agents/:agentId/departments', { agentId: uid });
 
-	const { data, isInitialLoading: isLoading, error } = useQuery(['getAgent'], async () => getAgent());
+	const { data, isPending, error } = useQuery({
+		queryKey: ['livechat-getAgentById', uid],
+		queryFn: async () => getAgentById(),
+		refetchOnWindowFocus: false,
+	});
+
 	const {
-		data: userDepartments,
-		isLoading: isUserDepartmentsLoading,
-		error: userDepartmentsError,
-	} = useQuery({ queryKey: ['getAgentDepartments'], queryFn: async () => getAgentDepartments(), cacheTime: 0 });
+		data: agentDepartments,
+		isPending: agentDepartmentsLoading,
+		error: agentsDepartmentsError,
+	} = useQuery({
+		queryKey: ['livechat-getAgentDepartments', uid],
+		queryFn: async () => getAgentDepartments(),
+		refetchOnWindowFocus: false,
+	});
 
 	const {
 		data: availableDepartments,
-		isLoading: isAvailableDepartmentsLoading,
+		isPending: availableDepartmentsLoading,
 		error: availableDepartmentsError,
-	} = useQuery(['getDepartments'], async () => getDepartments({ showArchived: 'true' }));
+	} = useQuery({
+		queryKey: ['livechat-getAvailableDepartments'],
+		queryFn: async () => getAvailableDepartments({ showArchived: 'true' }),
+	});
 
-	if (isLoading || isAvailableDepartmentsLoading || isUserDepartmentsLoading || !userDepartments || !availableDepartments) {
+	if (isPending || availableDepartmentsLoading || agentDepartmentsLoading || !agentDepartments || !availableDepartments) {
 		return <FormSkeleton />;
 	}
 
-	if (error || userDepartmentsError || availableDepartmentsError || !data || !data.user) {
-		return <Box p='x16'>{t('User_not_found')}</Box>;
+	if (error || agentsDepartmentsError || availableDepartmentsError || !data?.user) {
+		return <Box p={16}>{t('User_not_found')}</Box>;
 	}
 
-	return <AgentEdit uid={uid} data={data} userDepartments={userDepartments} availableDepartments={availableDepartments} reset={reload} />;
+	return (
+		<AgentEdit
+			agentData={data.user}
+			userDepartments={agentDepartments.departments}
+			availableDepartments={availableDepartments.departments}
+		/>
+	);
 };
 
 export default AgentEditWithData;

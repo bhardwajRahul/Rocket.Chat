@@ -1,13 +1,13 @@
+import { registerOrchestrator } from '@rocket.chat/apps';
 import { EssentialAppDisabledException } from '@rocket.chat/apps-engine/definition/exceptions';
-import { AppInterface } from '@rocket.chat/apps-engine/definition/metadata';
 import { AppManager } from '@rocket.chat/apps-engine/server/AppManager';
-import { Meteor } from 'meteor/meteor';
+import { Logger } from '@rocket.chat/logger';
 import { AppLogs, Apps as AppsModel, AppsPersistence } from '@rocket.chat/models';
+import { Meteor } from 'meteor/meteor';
 
-import { Logger } from '../../../server/lib/logger/Logger';
-import { settings, settingsRegistry } from '../../../app/settings/server';
-import { RealAppBridges } from '../../../app/apps/server/bridges';
 import { AppServerNotifier, AppsRestApi, AppUIKitInteractionApi } from './communication';
+import { AppRealLogStorage, AppRealStorage, ConfigurableAppSourceStorage } from './storage';
+import { RealAppBridges } from '../../../app/apps/server/bridges';
 import {
 	AppMessagesConverter,
 	AppRoomsConverter,
@@ -17,13 +17,18 @@ import {
 	AppDepartmentsConverter,
 	AppUploadsConverter,
 	AppVisitorsConverter,
+	AppRolesConverter,
+	AppContactsConverter,
 } from '../../../app/apps/server/converters';
-import { AppRealLogsStorage, AppRealStorage, ConfigurableAppSourceStorage } from './storage';
-import { canEnableApp } from '../../app/license/server/license';
+import { AppThreadsConverter } from '../../../app/apps/server/converters/threads';
+import { settings } from '../../../app/settings/server';
+import { canEnableApp } from '../../app/license/server/canEnableApp';
 
 function isTesting() {
 	return process.env.TEST_MODE === 'true';
 }
+
+const DISABLED_PRIVATE_APP_INSTALLATION = ['yes', 'true'].includes(String(process.env.DISABLE_PRIVATE_APP_INSTALLATION).toLowerCase());
 
 let appsSourceStorageType;
 let appsSourceStorageFilesystemPath;
@@ -50,13 +55,7 @@ export class AppServerOrchestrator {
 		this._logModel = AppLogs;
 		this._persistModel = AppsPersistence;
 		this._storage = new AppRealStorage(this._model);
-		this._logStorage = new AppRealLogsStorage(this._logModel);
-
-		// TODO: Remove it when fixed the race condition
-		// This enforce Fibers for a method not waited on apps-engine preventing a race condition
-		const { storeEntries } = this._logStorage;
-		this._logStorage.storeEntries = (...args) => Promise.await(storeEntries.call(this._logStorage, ...args));
-
+		this._logStorage = new AppRealLogStorage(this._logModel);
 		this._appSourceStorage = new ConfigurableAppSourceStorage(appsSourceStorageType, appsSourceStorageFilesystemPath);
 
 		this._converters = new Map();
@@ -65,9 +64,12 @@ export class AppServerOrchestrator {
 		this._converters.set('settings', new AppSettingsConverter(this));
 		this._converters.set('users', new AppUsersConverter(this));
 		this._converters.set('visitors', new AppVisitorsConverter(this));
+		this._converters.set('contacts', new AppContactsConverter(this));
 		this._converters.set('departments', new AppDepartmentsConverter(this));
 		this._converters.set('uploads', new AppUploadsConverter(this));
 		this._converters.set('videoConferences', new AppVideoConferencesConverter());
+		this._converters.set('threads', new AppThreadsConverter(this));
+		this._converters.set('roles', new AppRolesConverter(this));
 
 		this._bridges = new RealAppBridges(this);
 
@@ -141,6 +143,10 @@ export class AppServerOrchestrator {
 		return !isTesting();
 	}
 
+	shouldDisablePrivateAppInstallation() {
+		return DISABLED_PRIVATE_APP_INSTALLATION;
+	}
+
 	/**
 	 * @returns {Logger}
 	 */
@@ -168,26 +174,37 @@ export class AppServerOrchestrator {
 		await this.getManager().load();
 
 		// Before enabling each app we verify if there is still room for it
-		await this.getManager()
-			.get()
-			// We reduce everything to a promise chain so it runs sequentially
-			.reduce(
-				(control, app) =>
-					control.then(async () => {
-						const canEnable = await canEnableApp(app.getStorageItem());
+		const apps = await this.getManager().get();
 
-						if (canEnable) {
-							return this.getManager().loadOne(app.getID());
-						}
+		// This needs to happen sequentially to keep track of app limits
+		for await (const app of apps) {
+			try {
+				await canEnableApp(app.getStorageItem());
 
-						this._rocketchatLogger.warn(`App "${app.getInfo().name}" can't be enabled due to CE limits.`);
-					}),
-				Promise.resolve(),
-			);
+				await this.getManager().loadOne(app.getID(), true);
+			} catch (error) {
+				this._rocketchatLogger.warn(`App "${app.getInfo().name}" could not be enabled: `, error.message);
+			}
+		}
 
 		await this.getBridges().getSchedulerBridge().startScheduler();
 
-		this._rocketchatLogger.info(`Loaded the Apps Framework and loaded a total of ${this.getManager().get({ enabled: true }).length} Apps!`);
+		const appCount = (await this.getManager().get({ enabled: true })).length;
+
+		this._rocketchatLogger.info(`Loaded the Apps Framework and loaded a total of ${appCount} Apps!`);
+	}
+
+	async migratePrivateApps() {
+		const apps = await this.getManager().get({ installationSource: 'private' });
+
+		await Promise.all(apps.map((app) => this.getManager().migrate(app.getID())));
+		await Promise.all(apps.map((app) => this.getNotifier().appUpdated(app.getID())));
+	}
+
+	async disableMarketplaceApps() {
+		const apps = await this.getManager().get({ installationSource: 'marketplace' });
+
+		await Promise.all(apps.map((app) => this.getManager().disable(app.getID())));
 	}
 
 	async unload() {
@@ -237,60 +254,8 @@ export class AppServerOrchestrator {
 	}
 }
 
-export const AppEvents = AppInterface;
 export const Apps = new AppServerOrchestrator();
-
-void settingsRegistry.addGroup('General', function () {
-	this.section('Apps', function () {
-		this.add('Apps_Logs_TTL', '30_days', {
-			type: 'select',
-			values: [
-				{
-					key: '7_days',
-					i18nLabel: 'Apps_Logs_TTL_7days',
-				},
-				{
-					key: '14_days',
-					i18nLabel: 'Apps_Logs_TTL_14days',
-				},
-				{
-					key: '30_days',
-					i18nLabel: 'Apps_Logs_TTL_30days',
-				},
-			],
-			public: true,
-			hidden: false,
-			alert: 'Apps_Logs_TTL_Alert',
-		});
-
-		this.add('Apps_Framework_Source_Package_Storage_Type', 'gridfs', {
-			type: 'select',
-			values: [
-				{
-					key: 'gridfs',
-					i18nLabel: 'GridFS',
-				},
-				{
-					key: 'filesystem',
-					i18nLabel: 'FileSystem',
-				},
-			],
-			public: true,
-			hidden: false,
-			alert: 'Apps_Framework_Source_Package_Storage_Type_Alert',
-		});
-
-		this.add('Apps_Framework_Source_Package_Storage_FileSystem_Path', '', {
-			type: 'string',
-			public: true,
-			enableQuery: {
-				_id: 'Apps_Framework_Source_Package_Storage_Type',
-				value: 'filesystem',
-			},
-			alert: 'Apps_Framework_Source_Package_Storage_FileSystem_Alert',
-		});
-	});
-});
+registerOrchestrator(Apps);
 
 settings.watch('Apps_Framework_Source_Package_Storage_Type', (value) => {
 	if (!Apps.isInitialized()) {
@@ -306,32 +271,4 @@ settings.watch('Apps_Framework_Source_Package_Storage_FileSystem_Path', (value) 
 	} else {
 		Apps.getAppSourceStorage().setFileSystemStoragePath(value);
 	}
-});
-
-settings.watch('Apps_Logs_TTL', async (value) => {
-	if (!Apps.isInitialized()) {
-		return;
-	}
-
-	let expireAfterSeconds = 0;
-
-	switch (value) {
-		case '7_days':
-			expireAfterSeconds = 604800;
-			break;
-		case '14_days':
-			expireAfterSeconds = 1209600;
-			break;
-		case '30_days':
-			expireAfterSeconds = 2592000;
-			break;
-	}
-
-	if (!expireAfterSeconds) {
-		return;
-	}
-
-	const model = Apps._logModel;
-
-	await model.resetTTLIndex(expireAfterSeconds);
 });

@@ -1,6 +1,6 @@
 import { Box, Skeleton } from '@rocket.chat/fuselage';
 import type { ReactElement } from 'react';
-import React, { memo, useMemo } from 'react';
+import { memo, useMemo } from 'react';
 
 const availablePercentualWidths = [47, 68, 75, 82];
 
@@ -10,11 +10,7 @@ type MessageListSkeletonProps = {
 
 const MessageListSkeleton = ({ messageCount = 2 }: MessageListSkeletonProps): ReactElement => {
 	const widths = useMemo(
-		() =>
-			Array.from(
-				{ length: messageCount },
-				() => `${availablePercentualWidths[Math.floor(Math.random() * availablePercentualWidths.length)]}%`,
-			),
+		() => Array.from({ length: messageCount }, (_, index) => `${availablePercentualWidths[index % availablePercentualWidths.length]}%`),
 		[messageCount],
 	);
 

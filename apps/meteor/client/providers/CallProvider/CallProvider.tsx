@@ -1,12 +1,4 @@
-import type {
-	IVoipRoom,
-	IUser,
-	VoipEventDataSignature,
-	ICallerInfo,
-	ICallDetails,
-	ILivechatVisitor,
-	Serialized,
-} from '@rocket.chat/core-typings';
+import type { IVoipRoom, VoipEventDataSignature, ICallerInfo, ICallDetails, ILivechatVisitor, Serialized } from '@rocket.chat/core-typings';
 import {
 	VoipClientEvents,
 	isVoipEventAgentCalled,
@@ -17,11 +9,11 @@ import {
 	isVoipEventCallAbandoned,
 	UserState,
 } from '@rocket.chat/core-typings';
-import { useMutableCallback } from '@rocket.chat/fuselage-hooks';
+import { useEffectEvent } from '@rocket.chat/fuselage-hooks';
 import { Random } from '@rocket.chat/random';
-import type { Device, IExperimentalHTMLAudioElement } from '@rocket.chat/ui-contexts';
+import type { Device } from '@rocket.chat/ui-contexts';
 import {
-	useRoute,
+	useRouter,
 	useUser,
 	useSetting,
 	useEndpoint,
@@ -31,49 +23,28 @@ import {
 	useSetModal,
 	useTranslation,
 } from '@rocket.chat/ui-contexts';
-// import { useRoute, useUser, useSetting, useEndpoint, useStream, useSetModal } from '@rocket.chat/ui-contexts';
-import type { FC } from 'react';
-import React, { useMemo, useRef, useCallback, useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
+import { useMemo, useRef, useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { OutgoingByeRequest } from 'sip.js/lib/core';
 
-import { CustomSounds } from '../../../app/custom-sounds/client';
-import { getUserPreference } from '../../../app/utils/client';
-import { isOutboundClient, useVoipClient } from '../../../ee/client/hooks/useVoipClient';
-import { parseOutboundPhoneNumber } from '../../../ee/client/lib/voip/parseOutboundPhoneNumber';
-import { WrapUpCallModal } from '../../../ee/client/voip/components/modals/WrapUpCallModal';
+import { useVoipSounds } from './hooks/useVoipSounds';
 import type { CallContextValue } from '../../contexts/CallContext';
 import { CallContext, useIsVoipEnterprise } from '../../contexts/CallContext';
 import { useDialModal } from '../../hooks/useDialModal';
+import { isOutboundClient, useVoipClient } from '../../hooks/useVoipClient';
 import { roomCoordinator } from '../../lib/rooms/roomCoordinator';
 import type { QueueAggregator } from '../../lib/voip/QueueAggregator';
-
-type VoipSound = 'telephone' | 'outbound-call-ringing' | 'call-ended';
-
-const startRingback = (user: IUser, soundId: VoipSound, loop = true): void => {
-	const audioVolume = getUserPreference(user, 'notificationsSoundVolume', 100) as number;
-	CustomSounds.play(soundId, {
-		volume: Number((audioVolume / 100).toPrecision(2)),
-		loop,
-	});
-};
-
-const stopRingBackById = (soundId: VoipSound): void => {
-	CustomSounds.pause(soundId);
-	CustomSounds.remove(soundId);
-};
-
-const stopTelephoneRingback = (): void => stopRingBackById('telephone');
-const stopOutboundCallRinging = (): void => stopRingBackById('outbound-call-ringing');
-
-const stopAllRingback = (): void => {
-	stopTelephoneRingback();
-	stopOutboundCallRinging();
-};
+import { parseOutboundPhoneNumber } from '../../lib/voip/parseOutboundPhoneNumber';
+import { WrapUpCallModal } from '../../voip/components/modals/WrapUpCallModal';
 
 type NetworkState = 'online' | 'offline';
 
-export const CallProvider: FC = ({ children }) => {
+type CallProviderProps = {
+	children?: ReactNode;
+};
+
+export const CallProvider = ({ children }: CallProviderProps) => {
 	const [clientState, setClientState] = useState<'registered' | 'unregistered'>('unregistered');
 
 	const voipEnabled = useSetting('VoIP_Enabled');
@@ -88,13 +59,13 @@ export const CallProvider: FC = ({ children }) => {
 
 	const result = useVoipClient();
 	const user = useUser();
-	const homeRoute = useRoute('home');
+	const router = useRouter();
 	const setOutputMediaDevice = useSetOutputMediaDevice();
 	const setInputMediaDevice = useSetInputMediaDevice();
 
 	const hasVoIPEnterpriseLicense = useIsVoipEnterprise();
 
-	const remoteAudioMediaRef = useRef<IExperimentalHTMLAudioElement>(null); // TODO: Create a dedicated file for the AUDIO and make the controls accessible
+	const remoteAudioMediaRef = useRef<HTMLAudioElement>(null); // TODO: Create a dedicated file for the AUDIO and make the controls accessible
 
 	const [queueCounter, setQueueCounter] = useState(0);
 	const [queueName, setQueueName] = useState('');
@@ -102,34 +73,41 @@ export const CallProvider: FC = ({ children }) => {
 
 	const { openDialModal } = useDialModal();
 
+	const voipSounds = useVoipSounds();
+
 	const closeRoom = useCallback(
-		async (data = {}): Promise<void> => {
+		async (
+			data: {
+				comment?: string;
+				tags?: string[];
+			} = {},
+		): Promise<void> => {
 			roomInfo &&
 				(await voipCloseRoomEndpoint({
 					rid: roomInfo.rid,
 					token: roomInfo.v.token || '',
 					options: { comment: data?.comment, tags: data?.tags },
 				}));
-			homeRoute.push({});
+			router.navigate('/home');
 
 			const queueAggregator = result.voipClient?.getAggregator();
 			if (queueAggregator) {
 				queueAggregator.callEnded();
 			}
 		},
-		[homeRoute, result?.voipClient, roomInfo, voipCloseRoomEndpoint],
+		[router, result?.voipClient, roomInfo, voipCloseRoomEndpoint],
 	);
 
 	const openWrapUpModal = useCallback((): void => {
-		setModal(() => <WrapUpCallModal closeRoom={closeRoom} />);
+		setModal(<WrapUpCallModal closeRoom={closeRoom} />);
 	}, [closeRoom, setModal]);
 
-	const changeAudioOutputDevice = useMutableCallback((selectedAudioDevice: Device): void => {
+	const changeAudioOutputDevice = useEffectEvent((selectedAudioDevice: Device): void => {
 		remoteAudioMediaRef?.current &&
 			setOutputMediaDevice({ outputDevice: selectedAudioDevice, HTMLAudioElement: remoteAudioMediaRef.current });
 	});
 
-	const changeAudioInputDevice = useMutableCallback((selectedAudioDevice: Device): void => {
+	const changeAudioInputDevice = useEffectEvent((selectedAudioDevice: Device): void => {
 		if (!result.voipClient) {
 			return;
 		}
@@ -358,7 +336,7 @@ export const CallProvider: FC = ({ children }) => {
 			if (!callDetails.callInfo) {
 				return;
 			}
-			stopAllRingback();
+			voipSounds.stopAll();
 			if (callDetails.userState !== UserState.UAC) {
 				return;
 			}
@@ -399,16 +377,16 @@ export const CallProvider: FC = ({ children }) => {
 		};
 
 		const onRinging = (): void => {
-			startRingback(user, 'outbound-call-ringing');
+			voipSounds.play('outbound-call-ringing');
 		};
 
 		const onIncomingCallRinging = (): void => {
-			startRingback(user, 'telephone');
+			voipSounds.play('telephone');
 		};
 
 		const onCallTerminated = (): void => {
-			startRingback(user, 'call-ended', false);
-			stopAllRingback();
+			voipSounds.play('call-ended', false);
+			voipSounds.stopAll();
 		};
 
 		const onCallFailed = (reason: 'Not Found' | 'Address Incomplete' | 'Request Terminated' | string): void => {
@@ -457,7 +435,7 @@ export const CallProvider: FC = ({ children }) => {
 				result.voipClient?.off('callfailed', onCallFailed);
 			}
 		};
-	}, [createRoom, dispatchEvent, networkStatus, openDialModal, result.voipClient, t, user]);
+	}, [createRoom, dispatchEvent, networkStatus, openDialModal, result.voipClient, voipSounds, t, user]);
 
 	const contextValue: CallContextValue = useMemo(() => {
 		if (!voipEnabled) {
@@ -557,7 +535,13 @@ export const CallProvider: FC = ({ children }) => {
 	return (
 		<CallContext.Provider value={contextValue}>
 			{children}
-			{contextValue.enabled && createPortal(<audio ref={remoteAudioMediaRef} />, document.body)}
+			{contextValue.enabled &&
+				createPortal(
+					<audio ref={remoteAudioMediaRef}>
+						<track kind='captions' />
+					</audio>,
+					document.body,
+				)}
 		</CallContext.Provider>
 	);
 };

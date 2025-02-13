@@ -9,9 +9,8 @@ import {
 	StatesActions,
 	StatesAction,
 } from '@rocket.chat/fuselage';
-import { useTranslation } from '@rocket.chat/ui-contexts';
 import type { ReactElement } from 'react';
-import React from 'react';
+import { useTranslation } from 'react-i18next';
 
 type NoInstalledAppMatchesEmptyStateProps = {
 	shouldShowSearchText: boolean;
@@ -24,10 +23,10 @@ const NoInstalledAppMatchesEmptyState = ({
 	text,
 	onButtonClick,
 }: NoInstalledAppMatchesEmptyStateProps): ReactElement => {
-	const t = useTranslation();
+	const { t } = useTranslation();
 
 	return (
-		<Box mbs='x20'>
+		<Box mbs={20}>
 			<States>
 				<StatesIcon name='magnifier' />
 				<StatesTitle>{t('No_installed_app_matches')}</StatesTitle>

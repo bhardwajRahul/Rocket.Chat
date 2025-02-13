@@ -1,24 +1,24 @@
-import { Meteor } from 'meteor/meteor';
+import type { ILivechatAgent, ILivechatVisitor, IMessage, IRoom, IUser, IAuditLog } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { LivechatRooms, Messages, Rooms, Users, AuditLog } from '@rocket.chat/models';
+import { escapeRegExp } from '@rocket.chat/string-helpers';
 import { check } from 'meteor/check';
 import { DDPRateLimiter } from 'meteor/ddp-rate-limiter';
-import { TAPi18n } from 'meteor/rocketchat:tap-i18n';
-import { escapeRegExp } from '@rocket.chat/string-helpers';
-import type { ILivechatAgent, ILivechatVisitor, IMessage, IRoom, IUser } from '@rocket.chat/core-typings';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
-import type { Mongo } from 'meteor/mongo';
-import { LivechatRooms } from '@rocket.chat/models';
+import { Meteor } from 'meteor/meteor';
+import type { Filter } from 'mongodb';
 
-import AuditLog from './AuditLog';
-import { Rooms, Messages, Users } from '../../../../app/models/server';
 import { hasPermissionAsync } from '../../../../app/authorization/server/functions/hasPermission';
 import { updateCounter } from '../../../../app/statistics/server';
-import type { IAuditLog } from '../../../definition/IAuditLog';
+import { callbacks } from '../../../../lib/callbacks';
+import { isTruthy } from '../../../../lib/isTruthy';
+import { i18n } from '../../../../server/lib/i18n';
 
-const getValue = (room?: IRoom) => room && { rids: [room._id], name: room.name };
+const getValue = (room: IRoom | null) => room && { rids: [room._id], name: room.name };
 
-const getUsersIdFromUserName = (usernames: IUser['username'][]) => {
-	const user: IUser[] = usernames ? Users.findByUsername({ $in: usernames }) : undefined;
-	return user.map((userId) => userId._id);
+const getUsersIdFromUserName = async (usernames: IUser['username'][]) => {
+	const users = usernames ? await Users.findByUsernames(usernames.filter(isTruthy)).toArray() : undefined;
+
+	return users?.filter(isTruthy).map((userId) => userId._id);
 };
 
 const getRoomInfoByAuditParams = async ({
@@ -30,28 +30,34 @@ const getRoomInfoByAuditParams = async ({
 }: {
 	type: string;
 	roomId: IRoom['_id'];
-	users: IUser['username'][];
+	users: NonNullable<IUser['username']>[];
 	visitor: ILivechatVisitor['_id'];
 	agent: ILivechatAgent['_id'];
 }) => {
 	if (rid) {
-		return getValue(Rooms.findOne({ _id: rid }));
+		return getValue(await Rooms.findOne({ _id: rid }));
 	}
 
 	if (type === 'd') {
-		return getValue(Rooms.findDirectRoomContainingAllUsernames(usernames));
+		return getValue(await Rooms.findDirectRoomContainingAllUsernames(usernames));
 	}
 
 	if (type === 'l') {
 		console.warn('Deprecation Warning! This method will be removed in the next version (4.0.0)');
-		const rooms: IRoom[] = await LivechatRooms.findByVisitorIdAndAgentId(visitor, agent, {
-			projection: { _id: 1 },
-		}).toArray();
-		return rooms?.length ? { rids: rooms.map(({ _id }) => _id), name: TAPi18n.__('Omnichannel') } : undefined;
+		const extraQuery = await callbacks.run('livechat.applyRoomRestrictions', {});
+		const rooms: IRoom[] = await LivechatRooms.findByVisitorIdAndAgentId(
+			visitor,
+			agent,
+			{
+				projection: { _id: 1 },
+			},
+			extraQuery,
+		).toArray();
+		return rooms?.length ? { rids: rooms.map(({ _id }) => _id), name: i18n.t('Omnichannel') } : undefined;
 	}
 };
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		auditGetAuditions: (params: { startDate: Date; endDate: Date }) => IAuditLog[];
@@ -59,7 +65,7 @@ declare module '@rocket.chat/ui-contexts' {
 			rid: IRoom['_id'];
 			startDate: Date;
 			endDate: Date;
-			users: IUser['username'][];
+			users: NonNullable<IUser['username']>[];
 			msg: IMessage['msg'];
 			type: string;
 			visitor: ILivechatVisitor['_id'];
@@ -68,9 +74,9 @@ declare module '@rocket.chat/ui-contexts' {
 		auditGetOmnichannelMessages: (params: {
 			startDate: Date;
 			endDate: Date;
-			users: IUser['username'][];
+			users: NonNullable<IUser['username']>[];
 			msg: IMessage['msg'];
-			type: 'l';
+			type: string;
 			visitor?: ILivechatVisitor['_id'];
 			agent?: ILivechatAgent['_id'];
 		}) => IMessage[];
@@ -82,18 +88,25 @@ Meteor.methods<ServerMethods>({
 		check(startDate, Date);
 		check(endDate, Date);
 
-		const user = await Meteor.userAsync();
+		const user = (await Meteor.userAsync()) as IUser;
 		if (!user || !(await hasPermissionAsync(user._id, 'can-audit'))) {
 			throw new Meteor.Error('Not allowed');
 		}
+
+		const userFields = {
+			_id: user._id,
+			username: user.username,
+			...(user.name && { name: user.name }),
+			...(user.avatarETag && { avatarETag: user.avatarETag }),
+		};
 
 		const rooms: IRoom[] = await LivechatRooms.findByVisitorIdAndAgentId(visitor, agent, {
 			projection: { _id: 1 },
 		}).toArray();
 		const rids = rooms?.length ? rooms.map(({ _id }) => _id) : undefined;
-		const name = TAPi18n.__('Omnichannel');
+		const name = i18n.t('Omnichannel');
 
-		const query: Mongo.Selector<IMessage> = {
+		const query: Filter<IMessage> = {
 			rid: { $in: rids },
 			ts: {
 				$gt: startDate,
@@ -105,14 +118,14 @@ Meteor.methods<ServerMethods>({
 			const regex = new RegExp(escapeRegExp(msg).trim(), 'i');
 			query.msg = regex;
 		}
-		const messages = Messages.find(query).fetch();
+		const messages = await Messages.find(query).toArray();
 
 		// Once the filter is applied, messages will be shown and a log containing all filters will be saved for further auditing.
 
-		AuditLog.insert({
+		await AuditLog.insertOne({
 			ts: new Date(),
 			results: messages.length,
-			u: user,
+			u: userFields,
 			fields: { msg, users: usernames, rids, room: name, startDate, endDate, type, visitor, agent },
 		});
 
@@ -122,15 +135,22 @@ Meteor.methods<ServerMethods>({
 		check(startDate, Date);
 		check(endDate, Date);
 
-		const user = await Meteor.userAsync();
+		const user = (await Meteor.userAsync()) as IUser;
 		if (!user || !(await hasPermissionAsync(user._id, 'can-audit'))) {
 			throw new Meteor.Error('Not allowed');
 		}
 
+		const userFields = {
+			_id: user._id,
+			username: user.username,
+			...(user.name && { name: user.name }),
+			...(user.avatarETag && { avatarETag: user.avatarETag }),
+		};
+
 		let rids;
 		let name;
 
-		const query: Mongo.Selector<IMessage> = {
+		const query: Filter<IMessage> = {
 			ts: {
 				$gt: startDate,
 				$lt: endDate,
@@ -138,7 +158,7 @@ Meteor.methods<ServerMethods>({
 		};
 
 		if (type === 'u') {
-			const usersId = getUsersIdFromUserName(usernames);
+			const usersId = await getUsersIdFromUserName(usernames);
 			query['u._id'] = { $in: usersId };
 		} else {
 			const roomInfo = await getRoomInfoByAuditParams({ type, roomId: rid, users: usernames, visitor, agent });
@@ -156,16 +176,17 @@ Meteor.methods<ServerMethods>({
 			query.msg = regex;
 		}
 
-		const messages = Messages.find(query).fetch();
+		const messages = await Messages.find(query).toArray();
 
 		// Once the filter is applied, messages will be shown and a log containing all filters will be saved for further auditing.
 
-		AuditLog.insert({
+		await AuditLog.insertOne({
 			ts: new Date(),
 			results: messages.length,
-			u: user,
+			u: userFields,
 			fields: { msg, users: usernames, rids, room: name, startDate, endDate, type, visitor, agent },
 		});
+
 		updateCounter({ settingsId: 'Message_Auditing_Panel_Load_Count' });
 
 		return messages;
@@ -177,13 +198,24 @@ Meteor.methods<ServerMethods>({
 		if (!uid || !(await hasPermissionAsync(uid, 'can-audit-log'))) {
 			throw new Meteor.Error('Not allowed');
 		}
-		return AuditLog.find({
-			// 'u._id': userId,
-			ts: {
-				$gt: startDate,
-				$lt: endDate,
+		return AuditLog.find(
+			{
+				// 'u._id': userId,
+				ts: {
+					$gt: startDate,
+					$lt: endDate,
+				},
 			},
-		}).fetch();
+			{
+				projection: {
+					'u.services': 0,
+					'u.roles': 0,
+					'u.lastLogin': 0,
+					'u.statusConnection': 0,
+					'u.emails': 0,
+				},
+			},
+		).toArray();
 	},
 });
 

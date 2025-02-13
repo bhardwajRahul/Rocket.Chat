@@ -6,10 +6,9 @@ import {
 	Box,
 } from '@rocket.chat/fuselage';
 import type { ReactElement, ReactNode } from 'react';
-import React from 'react';
 
-import MarkdownText from '../../../MarkdownText';
 import type { OEmbedPreviewMetadata } from './OEmbedPreviewMetadata';
+import MarkdownText from '../../../MarkdownText';
 
 type OEmbedPreviewContentProps = { thumb?: ReactElement; children?: ReactNode } & OEmbedPreviewMetadata;
 
@@ -39,7 +38,7 @@ const OEmbedPreviewContent = ({
 				<MessageGenericPreviewFooter>
 					<Box display='flex' justifyContent='flex-start'>
 						{showSiteName && <MarkdownText variant='inline' content={`[${siteName}](${siteUrl})`} />}
-						{showFooterSeparator && <Box marginInline='x4'>{'|'}</Box>}
+						{showFooterSeparator && <Box marginInline={4}>|</Box>}
 						{showAuthorName && <MarkdownText variant='inline' content={`[${authorName}](${authorUrl})`} />}
 					</Box>
 				</MessageGenericPreviewFooter>

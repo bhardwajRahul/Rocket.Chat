@@ -1,17 +1,43 @@
-import { Meteor } from 'meteor/meteor';
+import { Media, Team } from '@rocket.chat/core-services';
+import type { IRoom, IUpload } from '@rocket.chat/core-typings';
+import { isPrivateRoom, isPublicRoom } from '@rocket.chat/core-typings';
+import { Messages, Rooms, Users, Uploads, Subscriptions } from '@rocket.chat/models';
 import type { Notifications } from '@rocket.chat/rest-typings';
-import { isGETRoomsNameExists } from '@rocket.chat/rest-typings';
-import { Messages, Rooms, Users } from '@rocket.chat/models';
-import type { IRoom } from '@rocket.chat/core-typings';
-import { Media } from '@rocket.chat/core-services';
+import {
+	isGETRoomsNameExists,
+	isRoomsImagesProps,
+	isRoomsMuteUnmuteUserProps,
+	isRoomsExportProps,
+	isRoomsIsMemberProps,
+	isRoomsCleanHistoryProps,
+	isRoomsOpenProps,
+	isRoomsMembersOrderedByRoleProps,
+} from '@rocket.chat/rest-typings';
+import { Meteor } from 'meteor/meteor';
 
-import { API } from '../api';
+import { isTruthy } from '../../../../lib/isTruthy';
+import { omit } from '../../../../lib/utils/omit';
+import * as dataExport from '../../../../server/lib/dataExport';
+import { eraseRoom } from '../../../../server/lib/eraseRoom';
+import { findUsersOfRoomOrderedByRole } from '../../../../server/lib/findUsersOfRoomOrderedByRole';
+import { openRoom } from '../../../../server/lib/openRoom';
+import { muteUserInRoom } from '../../../../server/methods/muteUserInRoom';
+import { unmuteUserInRoom } from '../../../../server/methods/unmuteUserInRoom';
 import { canAccessRoomAsync, canAccessRoomIdAsync } from '../../../authorization/server/functions/canAccessRoom';
 import { hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
-import { getUploadFormData } from '../lib/getUploadFormData';
-import { settings } from '../../../settings/server';
-import { eraseRoom } from '../../../../server/methods/eraseRoom';
+import { saveRoomSettings } from '../../../channel-settings/server/methods/saveRoomSettings';
+import { createDiscussion } from '../../../discussion/server/methods/createDiscussion';
 import { FileUpload } from '../../../file-upload/server';
+import { sendFileMessage } from '../../../file-upload/server/methods/sendFileMessage';
+import { syncRolePrioritiesForRoomIfRequired } from '../../../lib/server/functions/syncRolePrioritiesForRoomIfRequired';
+import { leaveRoomMethod } from '../../../lib/server/methods/leaveRoom';
+import { applyAirGappedRestrictionsValidation } from '../../../license/server/airGappedRestrictionsWrapper';
+import { settings } from '../../../settings/server';
+import { API } from '../api';
+import { composeRoomWithLastMessage } from '../helpers/composeRoomWithLastMessage';
+import { getPaginationItems } from '../helpers/getPaginationItems';
+import { getUserFromParams } from '../helpers/getUserFromParams';
+import { getUploadFormData } from '../lib/getUploadFormData';
 import {
 	findAdminRoom,
 	findAdminRooms,
@@ -20,11 +46,8 @@ import {
 	findChannelAndPrivateAutocompleteWithPagination,
 	findRoomsAvailableForTeams,
 } from '../lib/rooms';
-import * as dataExport from '../../../../server/lib/dataExport';
-import { composeRoomWithLastMessage } from '../helpers/composeRoomWithLastMessage';
-import { getPaginationItems } from '../helpers/getPaginationItems';
 
-async function findRoomByIdOrName({
+export async function findRoomByIdOrName({
 	params,
 	checkedArchived = true,
 }: {
@@ -73,7 +96,9 @@ API.v1.addRoute(
 		async get() {
 			const { roomName } = this.queryParams;
 
-			return API.v1.success({ exists: await Meteor.callAsync('roomNameExists', roomName) });
+			const room = await Rooms.findOneByName(roomName, { projection: { _id: 1 } });
+
+			return API.v1.success({ exists: !!room });
 		},
 	},
 );
@@ -133,11 +158,17 @@ API.v1.addRoute(
 
 API.v1.addRoute(
 	'rooms.upload/:rid',
-	{ authRequired: true },
+	{
+		authRequired: true,
+		deprecation: {
+			version: '8.0.0',
+			alternatives: ['rooms.media'],
+		},
+	},
 	{
 		async post() {
 			if (!(await canAccessRoomIdAsync(this.urlParams.rid, this.userId))) {
-				return API.v1.unauthorized();
+				return API.v1.forbidden();
 			}
 
 			const file = await getUploadFormData(
@@ -171,13 +202,127 @@ API.v1.addRoute(
 			const fileStore = FileUpload.getStore('Uploads');
 			const uploadedFile = await fileStore.insert(details, fileBuffer);
 
+			if ((fields.description?.length ?? 0) > settings.get<number>('Message_MaxAllowedSize')) {
+				throw new Meteor.Error('error-message-size-exceeded');
+			}
+
 			uploadedFile.description = fields.description;
 
 			delete fields.description;
 
-			await Meteor.callAsync('sendFileMessage', this.urlParams.rid, null, uploadedFile, fields);
+			await applyAirGappedRestrictionsValidation(() =>
+				sendFileMessage(this.userId, { roomId: this.urlParams.rid, file: uploadedFile, msgData: fields }),
+			);
 
 			const message = await Messages.getMessageByFileIdAndUsername(uploadedFile._id, this.userId);
+
+			return API.v1.success({
+				message,
+			});
+		},
+	},
+);
+
+API.v1.addRoute(
+	'rooms.media/:rid',
+	{ authRequired: true },
+	{
+		async post() {
+			if (!(await canAccessRoomIdAsync(this.urlParams.rid, this.userId))) {
+				return API.v1.forbidden();
+			}
+
+			const file = await getUploadFormData(
+				{
+					request: this.request,
+				},
+				{ field: 'file', sizeLimit: settings.get<number>('FileUpload_MaxFileSize') },
+			);
+
+			if (!file) {
+				throw new Meteor.Error('invalid-field');
+			}
+
+			let { fileBuffer } = file;
+
+			const expiresAt = new Date();
+			expiresAt.setHours(expiresAt.getHours() + 24);
+
+			const { fields } = file;
+
+			let content;
+
+			if (fields.content) {
+				try {
+					content = JSON.parse(fields.content);
+				} catch (e) {
+					console.error(e);
+					throw new Meteor.Error('invalid-field-content');
+				}
+			}
+
+			const details = {
+				name: file.filename,
+				size: fileBuffer.length,
+				type: file.mimetype,
+				rid: this.urlParams.rid,
+				userId: this.userId,
+				content,
+				expiresAt,
+			};
+
+			const stripExif = settings.get('Message_Attachments_Strip_Exif');
+			if (stripExif) {
+				// No need to check mime. Library will ignore any files without exif/xmp tags (like BMP, ico, PDF, etc)
+				fileBuffer = await Media.stripExifFromBuffer(fileBuffer);
+			}
+
+			const fileStore = FileUpload.getStore('Uploads');
+			const uploadedFile = await fileStore.insert(details, fileBuffer);
+
+			uploadedFile.path = FileUpload.getPath(`${uploadedFile._id}/${encodeURI(uploadedFile.name || '')}`);
+
+			await Uploads.updateFileComplete(uploadedFile._id, this.userId, omit(uploadedFile, '_id'));
+
+			return API.v1.success({
+				file: {
+					_id: uploadedFile._id,
+					url: uploadedFile.path,
+				},
+			});
+		},
+	},
+);
+
+API.v1.addRoute(
+	'rooms.mediaConfirm/:rid/:fileId',
+	{ authRequired: true },
+	{
+		async post() {
+			if (!(await canAccessRoomIdAsync(this.urlParams.rid, this.userId))) {
+				return API.v1.forbidden();
+			}
+
+			const file = await Uploads.findOneById(this.urlParams.fileId);
+
+			if (!file) {
+				throw new Meteor.Error('invalid-file');
+			}
+
+			if ((this.bodyParams.description?.length ?? 0) > settings.get<number>('Message_MaxAllowedSize')) {
+				throw new Meteor.Error('error-message-size-exceeded');
+			}
+
+			file.description = this.bodyParams.description;
+			delete this.bodyParams.description;
+
+			await applyAirGappedRestrictionsValidation(() =>
+				sendFileMessage(this.userId, { roomId: this.urlParams.rid, file, msgData: this.bodyParams }, { parseAttachmentsForE2EE: false }),
+			);
+
+			await Uploads.confirmTemporaryFile(this.urlParams.fileId, this.userId);
+
+			const message = await Messages.getMessageByFileIdAndUsername(file._id, this.userId);
 
 			return API.v1.success({
 				message,
@@ -234,10 +379,15 @@ API.v1.addRoute(
 
 API.v1.addRoute(
 	'rooms.cleanHistory',
-	{ authRequired: true },
+	{ authRequired: true, validateParams: isRoomsCleanHistoryProps },
 	{
 		async post() {
-			const { _id } = await findRoomByIdOrName({ params: this.bodyParams });
+			const room = await findRoomByIdOrName({ params: this.bodyParams });
+			const { _id } = room;
+
+			if (!room || !(await canAccessRoomAsync(room, { _id: this.userId }))) {
+				return API.v1.failure('User does not have access to the room [error-not-allowed]', 'error-not-allowed');
+			}
 
 			const {
 				latest,
@@ -289,7 +439,19 @@ API.v1.addRoute(
 				return API.v1.failure('not-allowed', 'Not Allowed');
 			}
 
-			return API.v1.success({ room: (await Rooms.findOneByIdOrName(room._id, { projection: fields })) ?? undefined });
+			const discussionParent =
+				room.prid &&
+				(await Rooms.findOneById<Pick<IRoom, 'name' | 'fname' | 't' | 'prid' | 'u'>>(room.prid, {
+					projection: { name: 1, fname: 1, t: 1, prid: 1, u: 1, sidepanel: 1 },
+				}));
+			const { team, parentRoom } = await Team.getRoomInfo(room);
+			const parent = discussionParent || parentRoom;
+
+			return API.v1.success({
+				room: await Rooms.findOneByIdOrName(room._id, { projection: fields }),
+				...(team && { team }),
+				...(parent && { parent }),
+			});
 		},
 	},
 );
@@ -300,20 +462,29 @@ API.v1.addRoute(
 	{
 		async post() {
 			const room = await findRoomByIdOrName({ params: this.bodyParams });
-			await Meteor.callAsync('leaveRoom', room._id);
+			const user = await Users.findOneById(this.userId);
+			if (!user) {
+				return API.v1.failure('Invalid user');
+			}
+			await leaveRoomMethod(user, room._id);
 
 			return API.v1.success();
 		},
 	},
 );
 
+/*
+TO-DO: 8.0.0 should use the ajv validation
+which will change this endpoint's
+response errors.
+*/
 API.v1.addRoute(
 	'rooms.createDiscussion',
-	{ authRequired: true },
+	{ authRequired: true /* , validateParams: isRoomsCreateDiscussionProps */ },
 	{
 		async post() {
 			// eslint-disable-next-line @typescript-eslint/naming-convention
-			const { prid, pmid, reply, t_name, users, encrypted } = this.bodyParams;
+			const { prid, pmid, reply, t_name, users, encrypted, topic } = this.bodyParams;
 			if (!prid) {
 				return API.v1.failure('Body parameter "prid" is required.');
 			}
@@ -328,14 +499,17 @@ API.v1.addRoute(
 				return API.v1.failure('Body parameter "encrypted" must be a boolean when included.');
 			}
 
-			const discussion = await Meteor.callAsync('createDiscussion', {
-				prid,
-				pmid,
-				t_name,
-				reply,
-				users: users || [],
-				encrypted,
-			});
+			const discussion = await applyAirGappedRestrictionsValidation(() =>
+				createDiscussion(this.userId, {
+					prid,
+					pmid,
+					t_name,
+					reply,
+					users: users?.filter(isTruthy) || [],
+					encrypted,
+					topic,
+				}),
+			);
 
 			return API.v1.success({ discussion });
 		},
@@ -377,6 +551,48 @@ API.v1.addRoute(
 );
 
 API.v1.addRoute(
+	'rooms.images',
+	{ authRequired: true, validateParams: isRoomsImagesProps },
+	{
+		async get() {
+			const room = await Rooms.findOneById<Pick<IRoom, '_id' | 't' | 'teamId' | 'prid'>>(this.queryParams.roomId, {
+				projection: { t: 1, teamId: 1, prid: 1 },
+			});
+
+			if (!room || !(await canAccessRoomAsync(room, { _id: this.userId }))) {
+				return API.v1.forbidden();
+			}
+
+			let initialImage: IUpload | null = null;
+			if (this.queryParams.startingFromId) {
+				initialImage = await Uploads.findOneById(this.queryParams.startingFromId);
+			}
+
+			const { offset, count } = await getPaginationItems(this.queryParams);
+
+			const { cursor, totalCount } = Uploads.findImagesByRoomId(room._id, initialImage?.uploadedAt, {
+				skip: offset,
+				limit: count,
+			});
+
+			const [files, total] = await Promise.all([cursor.toArray(), totalCount]);
+
+			// If the initial image was not returned in the query, insert it as the first element of the list
+			if (initialImage && !files.find(({ _id }) => _id === (initialImage as IUpload)._id)) {
+				files.splice(0, 0, initialImage);
+			}
+
+			return API.v1.success({
+				files,
+				count,
+				offset,
+				total,
+			});
+		},
+	},
+);
+
+API.v1.addRoute(
 	'rooms.adminRooms',
 	{ authRequired: true },
 	{
@@ -389,7 +605,7 @@ API.v1.addRoute(
 				await findAdminRooms({
 					uid: this.userId,
 					filter: filter || '',
-					types: types || [],
+					types: (types && !Array.isArray(types) ? [types] : types) ?? [],
 					pagination: {
 						offset,
 						count,
@@ -516,7 +732,7 @@ API.v1.addRoute(
 		async post() {
 			const { rid, ...params } = this.bodyParams;
 
-			const result = await Meteor.callAsync('saveRoomSettings', rid, params);
+			const result = await saveRoomSettings(this.userId, rid, params);
 
 			return API.v1.success({ rid: result.rid });
 		},
@@ -544,14 +760,10 @@ API.v1.addRoute(
 
 API.v1.addRoute(
 	'rooms.export',
-	{ authRequired: true },
+	{ authRequired: true, validateParams: isRoomsExportProps },
 	{
 		async post() {
 			const { rid, type } = this.bodyParams;
-
-			if (!rid || !type || !['email', 'file'].includes(type)) {
-				throw new Meteor.Error('error-invalid-params');
-			}
 
 			if (!(await hasPermissionAsync(this.userId, 'mail-messages', rid))) {
 				throw new Meteor.Error('error-action-not-allowed', 'Mailing is not allowed');
@@ -572,12 +784,8 @@ API.v1.addRoute(
 				const { dateFrom, dateTo } = this.bodyParams;
 				const { format } = this.bodyParams;
 
-				if (!['html', 'json'].includes(format || '')) {
-					throw new Meteor.Error('error-invalid-format');
-				}
-
-				const convertedDateFrom = new Date(dateFrom || '');
-				const convertedDateTo = new Date(dateTo || '');
+				const convertedDateFrom = dateFrom ? new Date(dateFrom) : new Date(0);
+				const convertedDateTo = dateTo ? new Date(dateTo) : new Date();
 				convertedDateTo.setDate(convertedDateTo.getDate() + 1);
 
 				if (convertedDateFrom > convertedDateTo) {
@@ -603,10 +811,6 @@ API.v1.addRoute(
 					throw new Meteor.Error('error-invalid-recipient');
 				}
 
-				if (messages?.length === 0) {
-					throw new Meteor.Error('error-invalid-messages');
-				}
-
 				const result = await dataExport.sendViaEmail(
 					{
 						rid,
@@ -623,6 +827,138 @@ API.v1.addRoute(
 			}
 
 			return API.v1.failure();
+		},
+	},
+);
+
+API.v1.addRoute(
+	'rooms.isMember',
+	{
+		authRequired: true,
+		validateParams: isRoomsIsMemberProps,
+	},
+	{
+		async get() {
+			const { roomId, userId, username } = this.queryParams;
+			const [room, user] = await Promise.all([
+				findRoomByIdOrName({
+					params: { roomId },
+				}) as Promise<IRoom>,
+				Users.findOneByIdOrUsername(userId || username),
+			]);
+
+			if (!user?._id) {
+				return API.v1.failure('error-user-not-found');
+			}
+
+			if (await canAccessRoomAsync(room, { _id: this.user._id })) {
+				return API.v1.success({
+					isMember: (await Subscriptions.countByRoomIdAndUserId(room._id, user._id)) > 0,
+				});
+			}
+			return API.v1.forbidden();
+		},
+	},
+);
+
+API.v1.addRoute(
+	'rooms.membersOrderedByRole',
+	{ authRequired: true, validateParams: isRoomsMembersOrderedByRoleProps },
+	{
+		async get() {
+			const findResult = await findRoomByIdOrName({
+				params: this.queryParams,
+				checkedArchived: false,
+			});
+
+			if (!(await canAccessRoomAsync(findResult, this.user))) {
+				return API.v1.notFound('The required "roomId" or "roomName" param provided does not match any room');
+			}
+
+			if (!isPublicRoom(findResult) && !isPrivateRoom(findResult)) {
+				return API.v1.failure('error-room-type-not-supported');
+			}
+
+			if (findResult.broadcast && !(await hasPermissionAsync(this.userId, 'view-broadcast-member-list', findResult._id))) {
+				return API.v1.unauthorized();
+			}
+
+			// Ensures that role priorities for the specified room are synchronized correctly.
+			// This function acts as a soft migration. If the `roomRolePriorities` field
+			// for the room has already been created and is up-to-date, no updates will be performed.
+			// If not, it will synchronize the role priorities of the users of the room.
+			await syncRolePrioritiesForRoomIfRequired(findResult._id);
+
+			const { offset: skip, count: limit } = await getPaginationItems(this.queryParams);
+			const { sort = {} } = await this.parseJsonQuery();
+
+			const { status, filter } = this.queryParams;
+
+			const { members, total } = await findUsersOfRoomOrderedByRole({
+				rid: findResult._id,
+				...(status && { status: { $in: status } }),
+				skip,
+				limit,
+				filter,
+				sort,
+			});
+
+			return API.v1.success({
+				members,
+				count: members.length,
+				offset: skip,
+				total,
+			});
+		},
+	},
+);
+
+API.v1.addRoute(
+	'rooms.muteUser',
+	{ authRequired: true, validateParams: isRoomsMuteUnmuteUserProps },
+	{
+		async post() {
+			const user = await getUserFromParams(this.bodyParams);
+
+			if (!user.username) {
+				return API.v1.failure('Invalid user');
+			}
+
+			await muteUserInRoom(this.userId, { rid: this.bodyParams.roomId, username: user.username });
+
+			return API.v1.success();
+		},
+	},
+);
+
+API.v1.addRoute(
+	'rooms.unmuteUser',
+	{ authRequired: true, validateParams: isRoomsMuteUnmuteUserProps },
+	{
+		async post() {
+			const user = await getUserFromParams(this.bodyParams);
+
+			if (!user.username) {
+				return API.v1.failure('Invalid user');
+			}
+
+			await unmuteUserInRoom(this.userId, { rid: this.bodyParams.roomId, username: user.username });
+
+			return API.v1.success();
+		},
+	},
+);
+
+API.v1.addRoute(
+	'rooms.open',
+	{ authRequired: true, validateParams: isRoomsOpenProps },
+	{
+		async post() {
+			const { roomId } = this.bodyParams;
+
+			await openRoom(this.userId, roomId);
+
+			return API.v1.success();
 		},
 	},
 );

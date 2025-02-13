@@ -1,11 +1,11 @@
 import type { IRole } from '@rocket.chat/core-typings';
-import { Margins, Icon, Button } from '@rocket.chat/fuselage';
-import { useMutableCallback } from '@rocket.chat/fuselage-hooks';
+import { Button } from '@rocket.chat/fuselage';
+import { useEffectEvent } from '@rocket.chat/fuselage-hooks';
 import { useRoute } from '@rocket.chat/ui-contexts';
 import type { ReactElement } from 'react';
-import React, { memo } from 'react';
+import { memo } from 'react';
 
-import GenericTable from '../../../../components/GenericTable';
+import { GenericTableHeaderCell } from '../../../../components/GenericTable';
 
 type RoleHeaderProps = {
 	_id: IRole['_id'];
@@ -16,7 +16,7 @@ type RoleHeaderProps = {
 const RoleHeader = ({ _id, name, description }: RoleHeaderProps): ReactElement => {
 	const router = useRoute('admin-permissions');
 
-	const handleEditRole = useMutableCallback(() => {
+	const handleEditRole = useEffectEvent(() => {
 		router.push({
 			context: 'edit',
 			_id,
@@ -24,14 +24,11 @@ const RoleHeader = ({ _id, name, description }: RoleHeaderProps): ReactElement =
 	});
 
 	return (
-		<GenericTable.HeaderCell clickable pi='x4' p='x8'>
-			<Button secondary onClick={handleEditRole}>
-				<Margins inline='x2'>
-					<span>{description || name}</span>
-					<Icon name='edit' size='x16' />
-				</Margins>
+		<GenericTableHeaderCell pi={4} p={8}>
+			<Button small icon='edit' secondary onClick={handleEditRole}>
+				{description || name}
 			</Button>
-		</GenericTable.HeaderCell>
+		</GenericTableHeaderCell>
 	);
 };
 

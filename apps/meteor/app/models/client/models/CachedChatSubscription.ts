@@ -1,10 +1,9 @@
 import type { IOmnichannelRoom, IRoomWithRetentionPolicy, ISubscription } from '@rocket.chat/core-typings';
 import { DEFAULT_SLA_CONFIG, LivechatPriorityWeight } from '@rocket.chat/core-typings';
+import type { SubscriptionWithRoom } from '@rocket.chat/ui-contexts';
 
-import { CachedCollection } from '../../../ui-cached-collection/client';
-import type { SubscriptionWithRoom } from '../../../../client/definitions/SubscriptionWithRoom';
-import { ChatRoom } from './ChatRoom';
 import { CachedChatRoom } from './CachedChatRoom';
+import { CachedCollection } from '../../../../client/lib/cachedCollections/CachedCollection';
 
 declare module '@rocket.chat/core-typings' {
 	interface ISubscription {
@@ -22,15 +21,8 @@ class CachedChatSubscription extends CachedCollection<SubscriptionWithRoom, ISub
 		return this.mergeWithRoom(record);
 	}
 
-	protected handleReceived(record: ISubscription, action: 'changed' | 'removed') {
-		const newRecord = this.mergeWithRoom(record);
-
-		if (action === 'removed') {
-			ChatRoom.remove(newRecord.rid);
-			void CachedChatRoom.save();
-		}
-
-		return newRecord;
+	protected handleReceived(record: ISubscription) {
+		return this.mergeWithRoom(record);
 	}
 
 	protected handleSync(record: ISubscription) {
@@ -43,7 +35,6 @@ class CachedChatSubscription extends CachedCollection<SubscriptionWithRoom, ISub
 				lm: 1,
 				lastMessage: 1,
 				uids: 1,
-				streamingOptions: 1,
 				usernames: 1,
 				usersCount: 1,
 				topic: 1,
@@ -80,7 +71,7 @@ class CachedChatSubscription extends CachedCollection<SubscriptionWithRoom, ISub
 			},
 		};
 
-		const room = ChatRoom.findOne({ _id: subscription.rid }, options);
+		const room = CachedChatRoom.collection.findOne({ _id: subscription.rid }, options);
 
 		const lastRoomUpdate = room?.lm || subscription.ts || room?.ts;
 
@@ -104,7 +95,6 @@ class CachedChatSubscription extends CachedCollection<SubscriptionWithRoom, ISub
 			avatarETag: room?.avatarETag,
 			retention: (room as IRoomWithRetentionPolicy | undefined)?.retention,
 			lastMessage: room?.lastMessage,
-			streamingOptions: room?.streamingOptions,
 			teamId: room?.teamId,
 			teamMain: room?.teamMain,
 			uids: room?.uids,
@@ -135,6 +125,10 @@ class CachedChatSubscription extends CachedCollection<SubscriptionWithRoom, ISub
 		};
 	}
 
+	async upsertSubscription(record: ISubscription): Promise<void> {
+		return this.handleRecordEvent('changed', record);
+	}
+
 	protected deserializeFromCache(record: unknown) {
 		const deserialized = super.deserializeFromCache(record);
 
@@ -149,6 +143,6 @@ class CachedChatSubscription extends CachedCollection<SubscriptionWithRoom, ISub
 const instance = new CachedChatSubscription();
 
 export {
-	/** @deprecated */
+	/** @deprecated new code refer to Minimongo collections like this one; prefer fetching data from the REST API, listening to changes via streamer events, and storing the state in a Tanstack Query */
 	instance as CachedChatSubscription,
 };

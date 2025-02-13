@@ -1,9 +1,11 @@
 import type { IThreadMainMessage, IThreadMessage } from '@rocket.chat/core-typings';
-import { isE2EEMessage } from '@rocket.chat/core-typings';
+import { isE2EEMessage, isQuoteAttachment } from '@rocket.chat/core-typings';
+import { MessageBody } from '@rocket.chat/fuselage';
 import type { TranslationKey } from '@rocket.chat/ui-contexts';
-import { useSetting, useUserId, useTranslation } from '@rocket.chat/ui-contexts';
+import { useSetting, useUserId } from '@rocket.chat/ui-contexts';
 import type { ReactElement } from 'react';
-import React, { memo } from 'react';
+import { memo } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { useUserData } from '../../../../hooks/useUserData';
 import type { UserPresence } from '../../../../lib/presence';
@@ -14,11 +16,11 @@ import BroadcastMetrics from '../../content/BroadcastMetrics';
 import Location from '../../content/Location';
 import MessageActions from '../../content/MessageActions';
 import Reactions from '../../content/Reactions';
-import UiKitSurface from '../../content/UiKitSurface';
 import UrlPreviews from '../../content/UrlPreviews';
 import { useNormalizedMessage } from '../../hooks/useNormalizedMessage';
 import { useOembedLayout } from '../../hooks/useOembedLayout';
 import { useSubscriptionFromMessageQuery } from '../../hooks/useSubscriptionFromMessageQuery';
+import UiKitMessageBlock from '../../uikit/UiKitMessageBlock';
 
 type ThreadMessageContentProps = {
 	message: IThreadMessage | IThreadMainMessage;
@@ -33,26 +35,35 @@ const ThreadMessageContent = ({ message }: ThreadMessageContentProps): ReactElem
 	const messageUser: UserPresence = { ...message.u, roles: [], ...useUserData(message.u._id) };
 	const readReceiptEnabled = useSetting('Message_Read_Receipt_Enabled', false);
 
-	const t = useTranslation();
+	const { t } = useTranslation();
 
 	const normalizedMessage = useNormalizedMessage(message);
 
+	const isMessageEncrypted = encrypted && normalizedMessage?.e2e === 'pending';
+
+	const quotes = normalizedMessage?.attachments?.filter(isQuoteAttachment) || [];
+
+	const attachments = normalizedMessage?.attachments?.filter((attachment) => !isQuoteAttachment(attachment)) || [];
+
 	return (
 		<>
+			{isMessageEncrypted && <MessageBody>{t('E2E_message_encrypted_placeholder')}</MessageBody>}
+
+			{!!quotes?.length && <Attachments attachments={quotes} />}
+
 			{!normalizedMessage.blocks?.length && !!normalizedMessage.md?.length && (
 				<>
 					{(!encrypted || normalizedMessage.e2e === 'done') && (
 						<MessageContentBody md={normalizedMessage.md} mentions={normalizedMessage.mentions} channels={normalizedMessage.channels} />
 					)}
-					{encrypted && normalizedMessage.e2e === 'pending' && t('E2E_message_encrypted_placeholder')}
 				</>
 			)}
 
 			{normalizedMessage.blocks && (
-				<UiKitSurface mid={normalizedMessage._id} blocks={normalizedMessage.blocks} appId rid={normalizedMessage.rid} />
+				<UiKitMessageBlock rid={normalizedMessage.rid} mid={normalizedMessage._id} blocks={normalizedMessage.blocks} />
 			)}
 
-			{normalizedMessage.attachments && <Attachments attachments={normalizedMessage.attachments} file={normalizedMessage.file} />}
+			{!!attachments && <Attachments id={message.files?.[0]?._id} attachments={attachments} />}
 
 			{oembedEnabled && !!normalizedMessage.urls?.length && <UrlPreviews urls={normalizedMessage.urls} />}
 
@@ -75,7 +86,7 @@ const ThreadMessageContent = ({ message }: ThreadMessageContentProps): ReactElem
 				<BroadcastMetrics username={messageUser.username} message={normalizedMessage} />
 			)}
 
-			{readReceiptEnabled && <ReadReceiptIndicator unread={normalizedMessage.unread} />}
+			{readReceiptEnabled && <ReadReceiptIndicator mid={normalizedMessage._id} unread={normalizedMessage.unread} />}
 		</>
 	);
 };

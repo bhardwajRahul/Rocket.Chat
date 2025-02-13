@@ -1,7 +1,8 @@
 import type { IUser, IUserEmail } from '@rocket.chat/core-typings';
 
 import { settings } from '../../../settings/server';
-import { getUserPreference, getURL } from '../../../utils/server';
+import { getURL } from '../../../utils/server/getURL';
+import { getUserPreference } from '../../../utils/server/lib/getUserPreference';
 
 const isVerifiedEmail = (me: IUser): false | IUserEmail | undefined => {
 	if (!me || !Array.isArray(me.emails)) {
@@ -15,11 +16,13 @@ const getUserPreferences = async (me: IUser): Promise<Record<string, unknown>> =
 	const defaultUserSettingPrefix = 'Accounts_Default_User_Preferences_';
 	const allDefaultUserSettings = settings.getByRegexp(new RegExp(`^${defaultUserSettingPrefix}.*$`));
 
-	return allDefaultUserSettings.reduce((accumulator: { [key: string]: unknown }, [key]) => {
+	const accumulator: Record<string, any> = {};
+	for await (const [key] of allDefaultUserSettings) {
 		const settingWithoutPrefix = key.replace(defaultUserSettingPrefix, ' ').trim();
-		accumulator[settingWithoutPrefix] = getUserPreference(me, settingWithoutPrefix);
-		return accumulator;
-	}, {});
+		accumulator[settingWithoutPrefix] = await getUserPreference(me, settingWithoutPrefix);
+	}
+
+	return accumulator;
 };
 
 export async function getUserInfo(me: IUser): Promise<

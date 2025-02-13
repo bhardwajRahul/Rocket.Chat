@@ -1,19 +1,18 @@
-import { Meteor } from 'meteor/meteor';
+import type { IAppServerOrchestrator, IAppsRoom, IAppsUser } from '@rocket.chat/apps';
 import type { ISlashCommand, ISlashCommandPreview, ISlashCommandPreviewItem } from '@rocket.chat/apps-engine/definition/slashcommands';
 import { SlashCommandContext } from '@rocket.chat/apps-engine/definition/slashcommands';
 import { CommandBridge } from '@rocket.chat/apps-engine/server/bridges/CommandBridge';
-import type { IMessage, RequiredField, SlashCommand } from '@rocket.chat/core-typings';
+import type { IMessage, RequiredField, SlashCommand, SlashCommandCallbackParams } from '@rocket.chat/core-typings';
+import { Meteor } from 'meteor/meteor';
 
-import { slashCommands } from '../../../utils/server';
 import { Utilities } from '../../../../ee/lib/misc/Utilities';
-import type { AppServerOrchestrator } from '../../../../ee/server/apps/orchestrator';
 import { parseParameters } from '../../../../lib/utils/parseParameters';
+import { slashCommands } from '../../../utils/server/slashCommand';
 
 export class AppCommandsBridge extends CommandBridge {
-	disabledCommands: Map<string, typeof slashCommands.commands[string]>;
+	disabledCommands: Map<string, (typeof slashCommands.commands)[string]>;
 
-	// eslint-disable-next-line no-empty-function
-	constructor(private readonly orch: AppServerOrchestrator) {
+	constructor(private readonly orch: IAppServerOrchestrator) {
 		super();
 		this.disabledCommands = new Map();
 	}
@@ -42,10 +41,10 @@ export class AppCommandsBridge extends CommandBridge {
 			throw new Error(`The command is not currently disabled: "${cmd}"`);
 		}
 
-		slashCommands.commands[cmd] = this.disabledCommands.get(cmd) as typeof slashCommands.commands[string];
+		slashCommands.commands[cmd] = this.disabledCommands.get(cmd) as (typeof slashCommands.commands)[string];
 		this.disabledCommands.delete(cmd);
 
-		this.orch.getNotifier().commandUpdated(cmd);
+		void this.orch.getNotifier().commandUpdated(cmd);
 	}
 
 	protected async disableCommand(command: string, appId: string): Promise<void> {
@@ -70,7 +69,7 @@ export class AppCommandsBridge extends CommandBridge {
 		this.disabledCommands.set(cmd, commandObj);
 		delete slashCommands.commands[cmd];
 
-		this.orch.getNotifier().commandDisabled(cmd);
+		void this.orch.getNotifier().commandDisabled(cmd);
 	}
 
 	// command: { command, paramsExample, i18nDescription, executor: function }
@@ -93,10 +92,10 @@ export class AppCommandsBridge extends CommandBridge {
 		item.previewer = command.previewer ? this._appCommandPreviewer.bind(this) : item.previewer;
 		item.previewCallback = (
 			command.executePreviewItem ? this._appCommandPreviewExecutor.bind(this) : item.previewCallback
-		) as typeof slashCommands.commands[string]['previewCallback'];
+		) as (typeof slashCommands.commands)[string]['previewCallback'];
 
 		slashCommands.commands[cmd] = item;
-		this.orch.getNotifier().commandUpdated(cmd);
+		void this.orch.getNotifier().commandUpdated(cmd);
 	}
 
 	protected async registerCommand(command: ISlashCommand, appId: string): Promise<void> {
@@ -112,14 +111,14 @@ export class AppCommandsBridge extends CommandBridge {
 			permission: command.permission,
 			callback: this._appCommandExecutor.bind(this),
 			providesPreview: command.providesPreview,
-			previewer: !command.previewer ? undefined : this._appCommandPreviewer.bind(this),
-			previewCallback: (!command.executePreviewItem ? undefined : this._appCommandPreviewExecutor.bind(this)) as
-				| typeof slashCommands.commands[string]['previewCallback']
+			previewer: command.providesPreview ? this._appCommandPreviewer.bind(this) : undefined,
+			previewCallback: (command.providesPreview ? this._appCommandPreviewExecutor.bind(this) : undefined) as
+				| (typeof slashCommands.commands)[string]['previewCallback']
 				| undefined,
 		} as SlashCommand;
 
 		slashCommands.commands[command.command.toLowerCase()] = item;
-		this.orch.getNotifier().commandAdded(command.command.toLowerCase());
+		void this.orch.getNotifier().commandAdded(command.command.toLowerCase());
 	}
 
 	protected async unregisterCommand(command: string, appId: string): Promise<void> {
@@ -133,7 +132,7 @@ export class AppCommandsBridge extends CommandBridge {
 		this.disabledCommands.delete(cmd);
 		delete slashCommands.commands[cmd];
 
-		this.orch.getNotifier().commandRemoved(cmd);
+		void this.orch.getNotifier().commandRemoved(cmd);
 	}
 
 	private _verifyCommand(command: ISlashCommand): void {
@@ -156,27 +155,19 @@ export class AppCommandsBridge extends CommandBridge {
 		if (typeof command.providesPreview !== 'boolean') {
 			throw new Error('Invalid Slash Command parameter provided, it must be a valid ISlashCommand object.');
 		}
-
-		if (typeof command.executor !== 'function') {
-			throw new Error('Invalid Slash Command parameter provided, it must be a valid ISlashCommand object.');
-		}
 	}
 
-	private async _appCommandExecutor(
-		command: string,
-		parameters: any,
-		message: RequiredField<Partial<IMessage>, 'rid'>,
-		triggerId?: string,
-	): Promise<void> {
-		const user = this.orch.getConverters()?.get('users').convertById(Meteor.userId());
-		const room = await this.orch.getConverters()?.get('rooms').convertById(message.rid);
+	private async _appCommandExecutor({ command, message, params, triggerId, userId }: SlashCommandCallbackParams<string>): Promise<void> {
+		// #TODO: #AppsEngineTypes - Remove explicit types and typecasts once the apps-engine definition/implementation mismatch is fixed.
+		const user: IAppsUser | undefined = await this.orch.getConverters()?.get('users').convertById(userId);
+		const room: IAppsRoom | undefined = await this.orch.getConverters()?.get('rooms').convertById(message.rid);
 		const threadId = message.tmid;
-		const params = parseParameters(parameters);
+		const parameters = parseParameters(params);
 
 		const context = new SlashCommandContext(
-			Object.freeze(user),
-			Object.freeze(room),
-			Object.freeze(params) as string[],
+			Object.freeze(user as IAppsUser),
+			Object.freeze(room as IAppsRoom),
+			Object.freeze(parameters) as string[],
 			threadId,
 			triggerId,
 		);
@@ -189,12 +180,19 @@ export class AppCommandsBridge extends CommandBridge {
 		parameters: any,
 		message: RequiredField<Partial<IMessage>, 'rid'>,
 	): Promise<ISlashCommandPreview | undefined> {
-		const user = this.orch.getConverters()?.get('users').convertById(Meteor.userId());
-		const room = await this.orch.getConverters()?.get('rooms').convertById(message.rid);
+		// #TODO: #AppsEngineTypes - Remove explicit types and typecasts once the apps-engine definition/implementation mismatch is fixed.
+		const uid = Meteor.userId() as string;
+		const user: IAppsUser | undefined = await this.orch.getConverters()?.get('users').convertById(uid);
+		const room: IAppsRoom | undefined = await this.orch.getConverters()?.get('rooms').convertById(message.rid);
 		const threadId = message.tmid;
 		const params = parseParameters(parameters);
 
-		const context = new SlashCommandContext(Object.freeze(user), Object.freeze(room), Object.freeze(params) as string[], threadId);
+		const context = new SlashCommandContext(
+			Object.freeze(user as IAppsUser),
+			Object.freeze(room as IAppsRoom),
+			Object.freeze(params) as string[],
+			threadId,
+		);
 		return this.orch.getManager()?.getCommandManager().getPreviews(command, context);
 	}
 
@@ -205,14 +203,16 @@ export class AppCommandsBridge extends CommandBridge {
 		preview: ISlashCommandPreviewItem,
 		triggerId: string,
 	): Promise<void> {
-		const user = this.orch.getConverters()?.get('users').convertById(Meteor.userId());
-		const room = await this.orch.getConverters()?.get('rooms').convertById(message.rid);
+		// #TODO: #AppsEngineTypes - Remove explicit types and typecasts once the apps-engine definition/implementation mismatch is fixed.
+		const uid = Meteor.userId() as string;
+		const user: IAppsUser | undefined = await this.orch.getConverters()?.get('users').convertById(uid);
+		const room: IAppsRoom | undefined = await this.orch.getConverters()?.get('rooms').convertById(message.rid);
 		const threadId = message.tmid;
 		const params = parseParameters(parameters);
 
 		const context = new SlashCommandContext(
-			Object.freeze(user),
-			Object.freeze(room),
+			Object.freeze(user as IAppsUser),
+			Object.freeze(room as IAppsRoom),
 			Object.freeze(params) as string[],
 			threadId,
 			triggerId,

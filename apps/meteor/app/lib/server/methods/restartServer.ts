@@ -1,9 +1,9 @@
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
 import { Meteor } from 'meteor/meteor';
 
 import { hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		restart_server(): {
@@ -25,8 +25,8 @@ Meteor.methods<ServerMethods>({
 			throw new Meteor.Error('error-not-allowed', 'Not allowed', { method: 'restart_server' });
 		}
 
-		Meteor.setTimeout(() => {
-			Meteor.setTimeout(() => {
+		setTimeout(() => {
+			setTimeout(() => {
 				console.warn('Call to process.exit() timed out, aborting.');
 				process.abort();
 			}, 1000);

@@ -1,24 +1,25 @@
-import { Box, Margins, Throbber } from '@rocket.chat/fuselage';
-import { useMutableCallback } from '@rocket.chat/fuselage-hooks';
-import { useToastMessageDispatch, useRoute, useEndpoint, useTranslation, useStream } from '@rocket.chat/ui-contexts';
+import type { ProgressStep } from '@rocket.chat/core-typings';
+import { Box, Margins, ProgressBar, Throbber } from '@rocket.chat/fuselage';
+import { useEffectEvent } from '@rocket.chat/fuselage-hooks';
+import { useToastMessageDispatch, useEndpoint, useStream, useRouter } from '@rocket.chat/ui-contexts';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import React, { useEffect } from 'react';
+import { useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 
+import { useErrorHandler } from './useErrorHandler';
 import { ImportingStartedStates } from '../../../../app/importer/lib/ImporterProgressStep';
 import { numberFormat } from '../../../../lib/utils/stringUtils';
-import Page from '../../../components/Page';
-import type { ProgressStep } from './ImportTypes';
-import { useErrorHandler } from './useErrorHandler';
+import { Page, PageHeader, PageScrollableContentWithShadow } from '../../../components/Page';
 
+// TODO: review inner logic
 const ImportProgressPage = function ImportProgressPage() {
 	const queryClient = useQueryClient();
 	const streamer = useStream('importers');
-	const t = useTranslation();
+	const { t, i18n } = useTranslation();
 	const dispatchToastMessage = useToastMessageDispatch();
 	const handleError = useErrorHandler();
 
-	const importHistoryRoute = useRoute('admin-import');
-	const prepareImportRoute = useRoute('admin-import-prepare');
+	const router = useRouter();
 
 	const getCurrentImportOperation = useEndpoint('GET', '/v1/getCurrentImportOperation');
 	const getImportProgress = useEndpoint('GET', '/v1/getImportProgress');
@@ -33,39 +34,17 @@ const ImportProgressPage = function ImportProgressPage() {
 		},
 	});
 
-	const currentOperation = useQuery(
-		['ImportProgressPage', 'currentOperation'],
-		async () => {
+	const currentOperation = useQuery({
+		queryKey: ['ImportProgressPage', 'currentOperation'],
+		queryFn: async () => {
 			const { operation } = await getCurrentImportOperation();
 			return operation;
 		},
-		{
-			onSuccess: ({ valid, status }) => {
-				console.log('currentOperation', valid, status);
-				if (!valid) {
-					importHistoryRoute.push();
-					return;
-				}
+		refetchInterval: 1000,
+	});
 
-				if (status === 'importer_done') {
-					importHistoryRoute.push();
-					return;
-				}
-
-				if (!ImportingStartedStates.includes(status)) {
-					prepareImportRoute.push();
-				}
-			},
-			onError: (error) => {
-				handleError(error, t('Failed_To_Load_Import_Data'));
-				importHistoryRoute.push();
-			},
-		},
-	);
-
-	const handleProgressUpdated = useMutableCallback(
+	const handleProgressUpdated = useEffectEvent(
 		({ key, step, completed, total }: { key: string; step: ProgressStep; completed: number; total: number }) => {
-			console.log('handleProgressUpdated', key, step, completed, total);
 			if (!currentOperation.isSuccess) {
 				return;
 			}
@@ -77,18 +56,18 @@ const ImportProgressPage = function ImportProgressPage() {
 
 			switch (step) {
 				case 'importer_done':
-					t.has(message) &&
+					i18n.exists(message) &&
 						dispatchToastMessage({
 							type: 'success',
 							message: t(message),
 						});
-					importHistoryRoute.push();
+					router.navigate('/admin/import');
 					return;
 
 				case 'importer_import_failed':
 				case 'importer_import_cancelled':
-					t.has(message) && handleError(message);
-					importHistoryRoute.push();
+					i18n.exists(message) && handleError(message);
+					router.navigate('/admin/import');
 					return;
 
 				default:
@@ -98,9 +77,9 @@ const ImportProgressPage = function ImportProgressPage() {
 		},
 	);
 
-	const progress = useQuery(
-		['ImportProgressPage', 'progress'],
-		async () => {
+	const progress = useQuery({
+		queryKey: ['importers', 'progress'],
+		queryFn: async () => {
 			const { key, step, count: { completed = 0, total = 0 } = {} } = await getImportProgress();
 			return {
 				key,
@@ -109,43 +88,79 @@ const ImportProgressPage = function ImportProgressPage() {
 				total,
 			};
 		},
-		{
-			refetchInterval: 1000,
-			enabled: !!currentOperation.isSuccess,
-			onSuccess: (progress) => {
-				console.log('progress', progress);
-				if (!progress) {
-					dispatchToastMessage({ type: 'warning', message: t('Importer_not_in_progress') });
-					prepareImportRoute.push();
-					return;
-				}
+		enabled: !!currentOperation.isSuccess,
+	});
+
+	useEffect(() => {
+		if (progress.data) {
+			const { step, key, total, completed } = progress.data;
+			if (!progress) {
+				dispatchToastMessage({ type: 'warning', message: t('Importer_not_in_progress') });
+				router.navigate('/admin/import/prepare');
+				return;
+			}
+
+			// do not use the endpoint data to update the completed progress, leave it to the streamer
+			if (!(ImportingStartedStates as string[]).includes(step)) {
+				handleProgressUpdated({
+					key,
+					step,
+					total,
+					completed,
+				});
+			}
+		}
+		if (progress.error) {
+			handleError(progress.error, t('Failed_To_Load_Import_Data'));
+			router.navigate('/admin/import');
+		}
+	}, [dispatchToastMessage, handleError, handleProgressUpdated, progress, router, t]);
+
+	useEffect(() => {
+		return streamer('progress', (progress) => {
+			// There shouldn't be any progress update sending only the rate at this point of the process
+			if (!('rate' in progress)) {
 				handleProgressUpdated({
 					key: progress.key,
 					step: progress.step,
-					total: progress.total,
-					completed: progress.completed,
+					completed: progress.count.completed,
+					total: progress.count.total,
 				});
-			},
-			onError: (error) => {
-				handleError(error, t('Failed_To_Load_Import_Data'));
-				importHistoryRoute.push();
-			},
-		},
-	);
-
-	useEffect(() => {
-		return streamer('progress', ({ count: { completed, total }, ...rest }) => {
-			handleProgressUpdated({ ...rest, completed, total } as any);
+			}
 		});
 	}, [handleProgressUpdated, streamer]);
 
+	useEffect(() => {
+		if (currentOperation?.data) {
+			const { valid, status } = currentOperation.data;
+			if (!valid) {
+				router.navigate('/admin/import');
+				return;
+			}
+
+			if (status === 'importer_done') {
+				dispatchToastMessage({ type: 'success', message: t('Importer_done') });
+				router.navigate('/admin/import');
+				return;
+			}
+
+			if (!(ImportingStartedStates as string[]).includes(status)) {
+				router.navigate('/admin/import/prepare');
+			}
+		}
+
+		if (currentOperation?.error) {
+			handleError(currentOperation.error, t('Failed_To_Load_Import_Data'));
+			router.navigate('/admin/import');
+		}
+	}, [currentOperation, dispatchToastMessage, handleError, router, t]);
+
 	return (
 		<Page>
-			<Page.Header title={t('Importing_Data')} />
-
-			<Page.ScrollableContentWithShadow>
+			<PageHeader title={t('Importing_Data')} />
+			<PageScrollableContentWithShadow>
 				<Box marginInline='auto' marginBlock='neg-x24' width='full' maxWidth='x580'>
-					<Margins block='x24'>
+					<Margins block={24}>
 						{currentOperation.isLoading && <Throbber justifyContent='center' />}
 						{progress.fetchStatus !== 'idle' && progress.isLoading && <Throbber justifyContent='center' />}
 
@@ -156,17 +171,16 @@ const ImportProgressPage = function ImportProgressPage() {
 									{t((progress.data.step[0].toUpperCase() + progress.data.step.slice(1)) as any)}
 								</Box>
 								<Box display='flex' justifyContent='center'>
-									<Box is='progress' value={progress.data.completed} max={progress.data.total} marginInlineEnd='x24' />
-									<Box is='span' fontScale='p2'>
-										{progress.data.completed}/{progress.data.total} ({numberFormat(progress.data.completed / progress.data.total, 0)}
-										%)
+									<ProgressBar percentage={(progress.data.completed / progress.data.total) * 100} />
+									<Box is='span' fontScale='p2' mis={24}>
+										{numberFormat((progress.data.completed / progress.data.total) * 100, 0)}%
 									</Box>
 								</Box>
 							</>
 						)}
 					</Margins>
 				</Box>
-			</Page.ScrollableContentWithShadow>
+			</PageScrollableContentWithShadow>
 		</Page>
 	);
 };

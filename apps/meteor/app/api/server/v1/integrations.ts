@@ -1,24 +1,29 @@
-import { Meteor } from 'meteor/meteor';
-import { Match, check } from 'meteor/check';
-import type { IIntegration } from '@rocket.chat/core-typings';
+import type { IIntegration, INewIncomingIntegration, INewOutgoingIntegration } from '@rocket.chat/core-typings';
+import { Integrations, IntegrationHistory } from '@rocket.chat/models';
 import {
 	isIntegrationsCreateProps,
 	isIntegrationsHistoryProps,
 	isIntegrationsRemoveProps,
 	isIntegrationsGetProps,
 	isIntegrationsUpdateProps,
+	isIntegrationsListProps,
 } from '@rocket.chat/rest-typings';
-import { Integrations, IntegrationHistory } from '@rocket.chat/models';
+import { escapeRegExp } from '@rocket.chat/string-helpers';
+import { Match, check } from 'meteor/check';
+import { Meteor } from 'meteor/meteor';
 import type { Filter } from 'mongodb';
 
-import { hasAtLeastOnePermissionAsync } from '../../../authorization/server/functions/hasPermission';
-import { API } from '../api';
 import {
 	mountIntegrationHistoryQueryBasedOnPermissions,
 	mountIntegrationQueryBasedOnPermissions,
 } from '../../../integrations/server/lib/mountQueriesBasedOnPermission';
-import { findOneIntegration } from '../lib/integrations';
+import { addIncomingIntegration } from '../../../integrations/server/methods/incoming/addIncomingIntegration';
+import { deleteIncomingIntegration } from '../../../integrations/server/methods/incoming/deleteIncomingIntegration';
+import { addOutgoingIntegration } from '../../../integrations/server/methods/outgoing/addOutgoingIntegration';
+import { deleteOutgoingIntegration } from '../../../integrations/server/methods/outgoing/deleteOutgoingIntegration';
+import { API } from '../api';
 import { getPaginationItems } from '../helpers/getPaginationItems';
+import { findOneIntegration } from '../lib/integrations';
 
 API.v1.addRoute(
 	'integrations.create',
@@ -27,9 +32,9 @@ API.v1.addRoute(
 		async post() {
 			switch (this.bodyParams.type) {
 				case 'webhook-outgoing':
-					return API.v1.success({ integration: await Meteor.callAsync('addOutgoingIntegration', this.bodyParams) });
+					return API.v1.success({ integration: await addOutgoingIntegration(this.userId, this.bodyParams as INewOutgoingIntegration) });
 				case 'webhook-incoming':
-					return API.v1.success({ integration: await Meteor.callAsync('addIncomingIntegration', this.bodyParams) });
+					return API.v1.success({ integration: await addIncomingIntegration(this.userId, this.bodyParams as INewIncomingIntegration) });
 			}
 
 			return API.v1.failure('Invalid integration type.');
@@ -39,14 +44,16 @@ API.v1.addRoute(
 
 API.v1.addRoute(
 	'integrations.history',
-	{ authRequired: true, validateParams: isIntegrationsHistoryProps },
+	{
+		authRequired: true,
+		validateParams: isIntegrationsHistoryProps,
+		permissionsRequired: {
+			GET: { permissions: ['manage-outgoing-integrations', 'manage-own-outgoing-integrations'], operation: 'hasAny' },
+		},
+	},
 	{
 		async get() {
 			const { userId, queryParams } = this;
-
-			if (!(await hasAtLeastOnePermissionAsync(userId, ['manage-outgoing-integrations', 'manage-own-outgoing-integrations']))) {
-				return API.v1.unauthorized();
-			}
 
 			if (!queryParams.id || queryParams.id.trim() === '') {
 				return API.v1.failure('Invalid integration id.');
@@ -79,30 +86,40 @@ API.v1.addRoute(
 
 API.v1.addRoute(
 	'integrations.list',
-	{ authRequired: true },
 	{
-		async get() {
-			if (
-				!(await hasAtLeastOnePermissionAsync(this.userId, [
+		authRequired: true,
+		validateParams: isIntegrationsListProps,
+		permissionsRequired: {
+			GET: {
+				permissions: [
 					'manage-outgoing-integrations',
 					'manage-own-outgoing-integrations',
 					'manage-incoming-integrations',
 					'manage-own-incoming-integrations',
-				]))
-			) {
-				return API.v1.unauthorized();
-			}
-
+				],
+				operation: 'hasAny',
+			},
+		},
+	},
+	{
+		async get() {
 			const { offset, count } = await getPaginationItems(this.queryParams);
-			const { sort, fields: projection, query } = await this.parseJsonQuery();
+			const { sort, fields, query } = await this.parseJsonQuery();
+			const { name, type } = this.queryParams;
 
-			const ourQuery = Object.assign(await mountIntegrationQueryBasedOnPermissions(this.userId), query) as Filter<IIntegration>;
+			const filter = {
+				...query,
+				...(name ? { name: { $regex: escapeRegExp(name as string), $options: 'i' } } : {}),
+				...(type ? { type } : {}),
+			};
+
+			const ourQuery = Object.assign(await mountIntegrationQueryBasedOnPermissions(this.userId), filter) as Filter<IIntegration>;
 
 			const { cursor, totalCount } = Integrations.findPaginated(ourQuery, {
 				sort: sort || { ts: -1 },
 				skip: offset,
 				limit: count,
-				projection,
+				projection: fields,
 			});
 
 			const [integrations, total] = await Promise.all([cursor.toArray(), totalCount]);
@@ -120,20 +137,23 @@ API.v1.addRoute(
 
 API.v1.addRoute(
 	'integrations.remove',
-	{ authRequired: true, validateParams: isIntegrationsRemoveProps },
 	{
-		async post() {
-			if (
-				!(await hasAtLeastOnePermissionAsync(this.userId, [
+		authRequired: true,
+		validateParams: isIntegrationsRemoveProps,
+		permissionsRequired: {
+			POST: {
+				permissions: [
 					'manage-outgoing-integrations',
 					'manage-own-outgoing-integrations',
 					'manage-incoming-integrations',
 					'manage-own-incoming-integrations',
-				]))
-			) {
-				return API.v1.unauthorized();
-			}
-
+				],
+				operation: 'hasAny',
+			},
+		},
+	},
+	{
+		async post() {
 			const { bodyParams } = this;
 
 			let integration: IIntegration | null = null;
@@ -155,9 +175,7 @@ API.v1.addRoute(
 
 					const outgoingId = integration._id;
 
-					await Meteor.runAsUser(this.userId, async () => {
-						await Meteor.callAsync('deleteOutgoingIntegration', outgoingId);
-					});
+					await deleteOutgoingIntegration(outgoingId, this.userId);
 
 					return API.v1.success({
 						integration,
@@ -177,9 +195,7 @@ API.v1.addRoute(
 					}
 
 					const incomingId = integration._id;
-					await Meteor.runAsUser(this.userId, async () => {
-						await Meteor.callAsync('deleteIncomingIntegration', incomingId);
-					});
+					await deleteIncomingIntegration(incomingId, this.userId);
 
 					return API.v1.success({
 						integration,

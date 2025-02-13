@@ -1,12 +1,12 @@
-import { Match, check } from 'meteor/check';
+import { VoipAsterisk } from '@rocket.chat/core-services';
 import type { IVoipExtensionBase } from '@rocket.chat/core-typings';
 import { Users } from '@rocket.chat/models';
-import { Voip } from '@rocket.chat/core-services';
+import { Match, check } from 'meteor/check';
 
-import { API } from '../../api';
-import { generateJWT } from '../../../../utils/server/lib/JWTHelper';
-import { settings } from '../../../../settings/server';
 import { logger } from './logger';
+import { settings } from '../../../../settings/server';
+import { generateJWT } from '../../../../utils/server/lib/JWTHelper';
+import { API } from '../../api';
 
 // Get the connector version and type
 API.v1.addRoute(
@@ -14,7 +14,7 @@ API.v1.addRoute(
 	{ authRequired: true, permissionsRequired: ['manage-voip-call-settings'] },
 	{
 		async get() {
-			const version = await Voip.getConnectorVersion();
+			const version = await VoipAsterisk.getConnectorVersion();
 			return API.v1.success(version);
 		},
 	},
@@ -26,7 +26,7 @@ API.v1.addRoute(
 	{ authRequired: true, permissionsRequired: ['manage-voip-call-settings'] },
 	{
 		async get() {
-			const list = await Voip.getExtensionList();
+			const list = await VoipAsterisk.getExtensionList();
 			const result = list.result as IVoipExtensionBase[];
 			return API.v1.success({ extensions: result });
 		},
@@ -48,7 +48,7 @@ API.v1.addRoute(
 					extension: String,
 				}),
 			);
-			const endpointDetails = await Voip.getExtensionDetails(this.queryParams);
+			const endpointDetails = await VoipAsterisk.getExtensionDetails(this.queryParams);
 			return API.v1.success({ ...endpointDetails.result });
 		},
 	},
@@ -68,8 +68,8 @@ API.v1.addRoute(
 					extension: String,
 				}),
 			);
-			const endpointDetails = await Voip.getRegistrationInfo(this.queryParams);
-			const encKey = settings.get('VoIP_JWT_Secret');
+			const endpointDetails = await VoipAsterisk.getRegistrationInfo(this.queryParams);
+			const encKey = settings.get<string>('VoIP_JWT_Secret');
 			if (!encKey) {
 				logger.warn('No JWT keys set. Sending registration info as plain text');
 				return API.v1.success({ ...endpointDetails.result });
@@ -95,7 +95,7 @@ API.v1.addRoute(
 			const { id } = this.queryParams;
 
 			if (id !== this.userId) {
-				return API.v1.unauthorized();
+				return API.v1.forbidden();
 			}
 
 			const { extension } =
@@ -111,8 +111,8 @@ API.v1.addRoute(
 				return API.v1.notFound('Extension not found');
 			}
 
-			const endpointDetails = await Voip.getRegistrationInfo({ extension });
-			const encKey = settings.get('VoIP_JWT_Secret');
+			const endpointDetails = await VoipAsterisk.getRegistrationInfo({ extension });
+			const encKey = settings.get<string>('VoIP_JWT_Secret');
 			if (!encKey) {
 				logger.warn('No JWT keys set. Sending registration info as plain text');
 				return API.v1.success({ ...endpointDetails.result });

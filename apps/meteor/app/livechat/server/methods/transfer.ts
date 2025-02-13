@@ -1,16 +1,16 @@
-import { Meteor } from 'meteor/meteor';
-import { Match, check } from 'meteor/check';
-import { LivechatVisitors, LivechatRooms, Subscriptions } from '@rocket.chat/models';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
+import { Omnichannel } from '@rocket.chat/core-services';
 import type { IUser } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { LivechatVisitors, LivechatRooms, Subscriptions, Users } from '@rocket.chat/models';
+import { Match, check } from 'meteor/check';
+import { Meteor } from 'meteor/meteor';
 
 import { hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
-import { Users } from '../../../models/server';
-import { Livechat } from '../lib/Livechat';
-import { normalizeTransferredByData } from '../lib/Helper';
 import { methodDeprecationLogger } from '../../../lib/server/lib/deprecationWarningLogger';
+import { normalizeTransferredByData } from '../lib/Helper';
+import { Livechat } from '../lib/LivechatTyped';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		'livechat:transfer'(transferData: {
@@ -27,7 +27,7 @@ declare module '@rocket.chat/ui-contexts' {
 // TODO: Deprecated: Remove in v6.0.0
 Meteor.methods<ServerMethods>({
 	async 'livechat:transfer'(transferData) {
-		methodDeprecationLogger.warn('livechat:transfer method is deprecated in favor of "livechat/room.forward" endpoint');
+		methodDeprecationLogger.method('livechat:transfer', '7.0.0');
 		const uid = Meteor.userId();
 		if (!uid || !(await hasPermissionAsync(uid, 'view-l-room'))) {
 			throw new Meteor.Error('error-not-allowed', 'Not allowed', { method: 'livechat:transfer' });
@@ -50,6 +50,10 @@ Meteor.methods<ServerMethods>({
 			throw new Meteor.Error('room-closed', 'Room closed', { method: 'livechat:transfer' });
 		}
 
+		if (!(await Omnichannel.isWithinMACLimit(room))) {
+			throw new Meteor.Error('error-mac-limit-reached', 'MAC limit reached', { method: 'livechat:transfer' });
+		}
+
 		const subscription = await Subscriptions.findOneByRoomIdAndUserId(room._id, uid, {
 			projection: { _id: 1 },
 		});
@@ -59,7 +63,17 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		const guest = await LivechatVisitors.findOneById(room.v?._id);
+		const guest = await LivechatVisitors.findOneEnabledById(room.v?._id);
+
+		if (!guest) {
+			throw new Meteor.Error('error-invalid-visitor', 'Invalid visitor', { method: 'livechat:transfer' });
+		}
+
+		const user = await Meteor.userAsync();
+
+		if (!user) {
+			throw new Meteor.Error('error-invalid-user', 'Invalid user', { method: 'livechat:transfer' });
+		}
 
 		const normalizedTransferData: {
 			roomId: string;
@@ -71,11 +85,14 @@ Meteor.methods<ServerMethods>({
 			transferredTo?: Pick<IUser, '_id' | 'username' | 'name'>;
 		} = {
 			...transferData,
-			transferredBy: normalizeTransferredByData((await Meteor.userAsync()) || {}, room),
+			transferredBy: normalizeTransferredByData(user, room),
 		};
 
 		if (normalizedTransferData.userId) {
-			const userToTransfer = Users.findOneById(normalizedTransferData.userId);
+			const userToTransfer = await Users.findOneById(normalizedTransferData.userId);
+			if (!userToTransfer) {
+				throw new Meteor.Error('error-invalid-user', 'Invalid user to transfer the room');
+			}
 			normalizedTransferData.transferredTo = {
 				_id: userToTransfer._id,
 				username: userToTransfer.username,

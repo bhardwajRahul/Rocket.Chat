@@ -1,19 +1,18 @@
 import { Divider } from '@rocket.chat/fuselage';
-import { useTranslation } from '@rocket.chat/ui-contexts';
-import type { FC } from 'react';
-import React, { Fragment, memo } from 'react';
+import { Fragment, memo } from 'react';
+import { useTranslation } from 'react-i18next';
 
+import SidebarNavigationItem from './SidebarNavigationItem';
 import type { SidebarItem } from '../../lib/createSidebarItems';
 import { isSidebarItem } from '../../lib/createSidebarItems';
-import SidebarNavigationItem from './SidebarNavigationItem';
 
 type SidebarItemsAssemblerProps = {
 	items: SidebarItem[];
 	currentPath?: string;
 };
 
-const SidebarItemsAssembler: FC<SidebarItemsAssemblerProps> = ({ items, currentPath }) => {
-	const t = useTranslation();
+const SidebarItemsAssembler = ({ items, currentPath }: SidebarItemsAssemblerProps) => {
+	const { t, i18n } = useTranslation();
 
 	return (
 		<>
@@ -22,12 +21,11 @@ const SidebarItemsAssembler: FC<SidebarItemsAssemblerProps> = ({ items, currentP
 					{isSidebarItem(props) ? (
 						<SidebarNavigationItem
 							permissionGranted={props.permissionGranted}
-							pathGroup={props.pathGroup || ''}
 							pathSection={props.href ?? props.pathSection ?? ''}
 							icon={props.icon}
 							label={t((props.i18nLabel || props.name) as Parameters<typeof t>[0])}
 							currentPath={currentPath}
-							tag={t.has(props.tag) ? t(props.tag) : props.tag}
+							tag={props.tag && i18n.exists(props.tag) ? t(props.tag) : props.tag}
 							externalUrl={props.externalUrl}
 							badge={props.badge}
 						/>

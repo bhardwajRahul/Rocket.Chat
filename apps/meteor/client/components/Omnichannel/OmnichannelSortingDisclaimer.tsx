@@ -1,15 +1,14 @@
 import { OmnichannelSortingMechanismSettingType as OmniSortingType } from '@rocket.chat/core-typings';
-import { Box } from '@rocket.chat/fuselage';
-import { useSetting, useTranslation } from '@rocket.chat/ui-contexts';
-import React, { useState } from 'react';
+import { useSetting } from '@rocket.chat/ui-contexts';
+import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
-type OmnichannelSortingDisclaimerProps = {
-	id?: string;
-};
+import { useOmnichannelEnterpriseEnabled } from '../../hooks/omnichannel/useOmnichannelEnterpriseEnabled';
 
-export const OmnichannelSortingDisclaimer = (props: OmnichannelSortingDisclaimerProps) => {
-	const t = useTranslation();
-	const sortingMechanism = useSetting<OmniSortingType>('Omnichannel_sorting_mechanism') || OmniSortingType.Timestamp;
+export const useOmnichannelSortingDisclaimer = () => {
+	const isOmnichannelEnabled = useOmnichannelEnterpriseEnabled();
+
+	const sortingMechanism = useSetting<OmniSortingType>('Omnichannel_sorting_mechanism', OmniSortingType.Timestamp);
 
 	const [{ [sortingMechanism]: type }] = useState({
 		[OmniSortingType.Priority]: 'Priorities',
@@ -17,13 +16,17 @@ export const OmnichannelSortingDisclaimer = (props: OmnichannelSortingDisclaimer
 		[OmniSortingType.Timestamp]: '',
 	} as const);
 
+	return isOmnichannelEnabled ? type : '';
+};
+
+export const OmnichannelSortingDisclaimer = () => {
+	const { t } = useTranslation();
+
+	const type = useOmnichannelSortingDisclaimer();
+
 	if (!type) {
 		return null;
 	}
 
-	return (
-		<Box is='small' display='block' padding='4px 12px' fontSize='14px' lineHeight='20px' maxWidth='180px' {...props}>
-			{t('Omnichannel_sorting_disclaimer', { sortingMechanism: t(type) })}
-		</Box>
-	);
+	return <>{t('Omnichannel_sorting_disclaimer', { sortingMechanism: t(type) })}</>;
 };

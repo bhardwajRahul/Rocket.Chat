@@ -1,24 +1,23 @@
+import { Users } from '@rocket.chat/models';
+import { isLivechatUsersManagerGETProps, isPOSTLivechatUsersTypeProps } from '@rocket.chat/rest-typings';
 import { check } from 'meteor/check';
 import _ from 'underscore';
-import { isLivechatUsersManagerGETProps, isPOSTLivechatUsersTypeProps } from '@rocket.chat/rest-typings';
 
 import { API } from '../../../../api/server';
-import { Users } from '../../../../models/server';
-import { Livechat } from '../../../server/lib/Livechat';
-import { findAgents, findManagers } from '../../../server/api/lib/users';
-import { hasAtLeastOnePermissionAsync } from '../../../../authorization/server/functions/hasPermission';
 import { getPaginationItems } from '../../../../api/server/helpers/getPaginationItems';
+import { hasAtLeastOnePermissionAsync } from '../../../../authorization/server/functions/hasPermission';
+import { findAgents, findManagers } from '../../../server/api/lib/users';
+import { Livechat } from '../../../server/lib/LivechatTyped';
+
+const emptyStringArray: string[] = [];
 
 API.v1.addRoute(
 	'livechat/users/:type',
 	{
 		authRequired: true,
 		permissionsRequired: {
-			GET: {
-				permissions: ['manage-livechat-agents'],
-				operation: 'hasAll',
-			},
-			POST: { permissions: ['view-livechat-manager'], operation: 'hasAll' },
+			'POST': ['view-livechat-manager'],
+			'*': emptyStringArray,
 		},
 		validateParams: {
 			GET: isLivechatUsersManagerGETProps,
@@ -36,12 +35,16 @@ API.v1.addRoute(
 
 			if (this.urlParams.type === 'agent') {
 				if (!(await hasAtLeastOnePermissionAsync(this.userId, ['transfer-livechat-guest', 'edit-omnichannel-contact']))) {
-					return API.v1.unauthorized();
+					return API.v1.forbidden();
 				}
 
+				const { onlyAvailable, excludeId, showIdleAgents } = this.queryParams;
 				return API.v1.success(
 					await findAgents({
 						text,
+						onlyAvailable,
+						excludeId,
+						showIdleAgents,
 						pagination: {
 							offset,
 							count,
@@ -52,7 +55,7 @@ API.v1.addRoute(
 			}
 			if (this.urlParams.type === 'manager') {
 				if (!(await hasAtLeastOnePermissionAsync(this.userId, ['view-livechat-manager']))) {
-					return API.v1.unauthorized();
+					return API.v1.forbidden();
 				}
 
 				return API.v1.success(
@@ -93,7 +96,7 @@ API.v1.addRoute(
 	{ authRequired: true, permissionsRequired: ['view-livechat-manager'] },
 	{
 		async get() {
-			const user = Users.findOneById(this.urlParams._id);
+			const user = await Users.findOneById(this.urlParams._id);
 
 			if (!user) {
 				return API.v1.failure('User not found');
@@ -120,9 +123,9 @@ API.v1.addRoute(
 			});
 		},
 		async delete() {
-			const user = Users.findOneById(this.urlParams._id);
+			const user = await Users.findOneById(this.urlParams._id);
 
-			if (!user) {
+			if (!user?.username) {
 				return API.v1.failure();
 			}
 

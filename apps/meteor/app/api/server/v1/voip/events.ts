@@ -1,10 +1,10 @@
-import { Match, check } from 'meteor/check';
+import { LivechatVoip } from '@rocket.chat/core-services';
 import { VoipClientEvents } from '@rocket.chat/core-typings';
 import { VoipRoom } from '@rocket.chat/models';
-import { LivechatVoip } from '@rocket.chat/core-services';
+import { Match, check } from 'meteor/check';
 
-import { API } from '../../api';
 import { canAccessRoomAsync } from '../../../../authorization/server';
+import { API } from '../../api';
 
 API.v1.addRoute(
 	'voip/events',
@@ -26,7 +26,7 @@ API.v1.addRoute(
 				return API.v1.notFound();
 			}
 			if (!(await canAccessRoomAsync(room, this.user))) {
-				return API.v1.unauthorized();
+				return API.v1.forbidden();
 			}
 
 			return API.v1.success(await LivechatVoip.handleEvent(event, room, this.user, comment));

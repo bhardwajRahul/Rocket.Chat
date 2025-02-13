@@ -1,48 +1,34 @@
-import { useRoute, useRouteParameter, useTranslation } from '@rocket.chat/ui-contexts';
-import React, { useMemo } from 'react';
+import { useRoute, useRouteParameter } from '@rocket.chat/ui-contexts';
 
-import VerticalBar from '../../../components/VerticalBar';
-import ContactEditWithData from './contacts/contextualBar/ContactEditWithData';
-import ContactInfo from './contacts/contextualBar/ContactInfo';
-import ContactNewEdit from './contacts/contextualBar/ContactNewEdit';
-
-const HEADER_OPTIONS = {
-	new: { icon: 'user', title: 'New_Contact' },
-	info: { icon: 'user', title: 'Contact_Info' },
-	edit: { icon: 'pencil', title: 'Edit_Contact_Profile' },
-} as const;
-
-type BarOptions = keyof typeof HEADER_OPTIONS;
+import ContactInfo from '../contactInfo/ContactInfo';
+import ContactInfoError from '../contactInfo/ContactInfoError';
+import EditContactInfo from '../contactInfo/EditContactInfo';
+import EditContactInfoWithData from '../contactInfo/EditContactInfoWithData';
 
 const ContactContextualBar = () => {
 	const directoryRoute = useRoute('omnichannel-directory');
-	const bar = (useRouteParameter('bar') || 'info') as BarOptions;
-	const contactId = useRouteParameter('id') || '';
+	const contactId = useRouteParameter('id');
+	const context = useRouteParameter('context');
 
-	const t = useTranslation();
-
-	const handleContactsVerticalBarCloseButtonClick = () => {
-		directoryRoute.push({ page: 'contacts' });
+	const handleClose = () => {
+		directoryRoute.push({ tab: 'contacts' });
 	};
 
-	const handleContactsVerticalBarBackButtonClick = () => {
-		directoryRoute.push({ page: 'contacts', id: contactId, bar: 'info' });
-	};
+	const handleCancel = () => contactId && directoryRoute.push({ tab: 'contacts', context: 'details', id: contactId });
 
-	const header = useMemo(() => HEADER_OPTIONS[bar] || HEADER_OPTIONS.info, [bar]);
+	if (context === 'edit' && contactId) {
+		return <EditContactInfoWithData id={contactId} onClose={handleClose} onCancel={handleCancel} />;
+	}
 
-	return (
-		<VerticalBar className={'contextual-bar'}>
-			<VerticalBar.Header>
-				<VerticalBar.Icon name={header.icon} />
-				<VerticalBar.Text>{t(header.title)}</VerticalBar.Text>
-				<VerticalBar.Close onClick={handleContactsVerticalBarCloseButtonClick} />
-			</VerticalBar.Header>
-			{bar === 'new' && <ContactNewEdit id={contactId} close={handleContactsVerticalBarCloseButtonClick} />}
-			{bar === 'info' && <ContactInfo id={contactId} />}
-			{bar === 'edit' && <ContactEditWithData id={contactId} close={handleContactsVerticalBarBackButtonClick} />}
-		</VerticalBar>
-	);
+	if (context === 'new' && !contactId) {
+		return <EditContactInfo onClose={handleClose} onCancel={handleClose} />;
+	}
+
+	if (!contactId) {
+		return <ContactInfoError onClose={handleClose} />;
+	}
+
+	return <ContactInfo id={contactId} onClose={handleClose} />;
 };
 
 export default ContactContextualBar;

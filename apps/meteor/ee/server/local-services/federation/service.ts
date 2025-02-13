@@ -1,16 +1,21 @@
+import type {
+	IFederationServiceEE,
+	IFederationJoinExternalPublicRoomInput,
+	FederationConfigurationStatus,
+} from '@rocket.chat/core-services';
+import type { IRoom } from '@rocket.chat/core-typings';
 import type { FederationPaginatedResult, IFederationPublicRooms } from '@rocket.chat/rest-typings';
-import type { IFederationServiceEE } from '@rocket.chat/core-services';
 
-import { AbstractFederationService } from '../../../../server/services/federation/service';
 import type { FederationUserServiceEE } from './application/UserService';
-import { FederationSearchPublicRoomsInputDto } from './application/room/sender/input/RoomInputDto';
-import type { RocketChatRoomAdapterEE } from './infrastructure/rocket-chat/adapters/Room';
-import type { RocketChatUserAdapterEE } from './infrastructure/rocket-chat/adapters/User';
-import { FederationFactoryEE } from './infrastructure/Factory';
-import type { IFederationBridgeEE } from './domain/IFederationBridge';
-import { FederationRoomSenderConverterEE } from './infrastructure/rocket-chat/converters/RoomSender';
 import type { FederationDirectMessageRoomServiceSender } from './application/room/sender/DirectMessageRoomServiceSender';
 import type { FederationRoomServiceSender } from './application/room/sender/RoomServiceSender';
+import { FederationSearchPublicRoomsInputDto } from './application/room/sender/input/RoomInputDto';
+import type { IFederationBridgeEE } from './domain/IFederationBridge';
+import { FederationFactoryEE } from './infrastructure/Factory';
+import type { RocketChatRoomAdapterEE } from './infrastructure/rocket-chat/adapters/Room';
+import type { RocketChatUserAdapterEE } from './infrastructure/rocket-chat/adapters/User';
+import { FederationRoomSenderConverterEE } from './infrastructure/rocket-chat/converters/RoomSender';
+import { AbstractFederationService } from '../../../../server/services/federation/service';
 
 abstract class AbstractBaseFederationServiceEE extends AbstractFederationService {
 	protected internalUserServiceEE: FederationUserServiceEE;
@@ -51,6 +56,7 @@ abstract class AbstractBaseFederationServiceEE extends AbstractFederationService
 			this.getInternalSettingsAdapter(),
 			this.getInternalMessageAdapter(),
 			this.getInternalNotificationAdapter(),
+			FederationFactoryEE.buildInternalQueueAdapter(),
 			this.getBridge(),
 		);
 	}
@@ -127,7 +133,7 @@ abstract class AbstractBaseFederationServiceEE extends AbstractFederationService
 		await super.cleanUpHandlers();
 	}
 
-	public async created(): Promise<void> {
+	public async started(): Promise<void> {
 		await super.setupFederation();
 		await this.startFederation();
 	}
@@ -181,15 +187,61 @@ export class FederationServiceEE extends AbstractBaseFederationServiceEE impleme
 		return this.internalUserServiceEE.removeSearchedServerNameByInternalUserId(internalUserId, serverName);
 	}
 
-	public async joinExternalPublicRoom(internalUserId: string, externalRoomId: string): Promise<void> {
+	public async scheduleJoinExternalPublicRoom(
+		internalUserId: string,
+		externalRoomId: string,
+		roomName?: string,
+		pageToken?: string,
+	): Promise<void> {
+		await this.internalRoomServiceSenderEE.scheduleJoinExternalPublicRoom(internalUserId, externalRoomId, roomName, pageToken);
+	}
+
+	public async joinExternalPublicRoom(input: IFederationJoinExternalPublicRoomInput): Promise<void> {
+		const { internalUserId, externalRoomId, roomName, pageToken } = input;
 		await this.internalRoomServiceSenderEE.joinExternalPublicRoom(
-			FederationRoomSenderConverterEE.toJoinExternalPublicRoomDto(internalUserId, externalRoomId),
+			FederationRoomSenderConverterEE.toJoinExternalPublicRoomDto(internalUserId, externalRoomId, roomName, pageToken),
 		);
+	}
+
+	public async verifyMatrixIds(matrixIds: string[]): Promise<Map<string, string>> {
+		return super.verifyMatrixIds(matrixIds);
 	}
 
 	static async createFederationService(): Promise<FederationServiceEE> {
 		const federationService = new FederationServiceEE();
 		await federationService.initialize();
 		return federationService;
+	}
+
+	async started(): Promise<void> {
+		return super.started();
+	}
+
+	async stopped(): Promise<void> {
+		return super.stopped();
+	}
+
+	public async verifyConfiguration(): Promise<void> {
+		return super.verifyConfiguration();
+	}
+
+	public async markConfigurationValid(): Promise<void> {
+		return super.markConfigurationValid();
+	}
+
+	public async markConfigurationInvalid(): Promise<void> {
+		return super.markConfigurationInvalid();
+	}
+
+	public async configurationStatus(): Promise<FederationConfigurationStatus> {
+		return super.configurationStatus();
+	}
+
+	public async beforeCreateRoom(room: Partial<IRoom>): Promise<void> {
+		return super.beforeCreateRoom(room);
+	}
+
+	async deactivateRemoteUser(userId: string): Promise<void> {
+		return super.deactivateRemoteUser(userId);
 	}
 }

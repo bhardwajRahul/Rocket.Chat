@@ -1,12 +1,13 @@
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import type { TranslationKey } from '@rocket.chat/ui-contexts';
 import { Meteor } from 'meteor/meteor';
-import type { ServerMethods, TranslationKey } from '@rocket.chat/ui-contexts';
 
-import { settings } from '../../settings/server';
-import { hasPermissionAsync } from '../../authorization/server/functions/hasPermission';
-import { logger } from './logger';
 import { CROWD } from './crowd';
+import { logger } from './logger';
+import { hasPermissionAsync } from '../../authorization/server/functions/hasPermission';
+import { settings } from '../../settings/server';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		crowd_test_connection(): { message: TranslationKey; params: string[] };
@@ -35,10 +36,10 @@ Meteor.methods<ServerMethods>({
 
 		try {
 			const crowd = new CROWD();
-			crowd.checkConnection();
+			await crowd.checkConnection();
 
 			return {
-				message: 'Connection_success' as const,
+				message: 'Crowd_Connection_successful' as const,
 				params: [],
 			};
 		} catch (err) {
@@ -64,7 +65,7 @@ Meteor.methods<ServerMethods>({
 		try {
 			const crowd = new CROWD();
 			const startTime = Date.now();
-			crowd.sync();
+			await crowd.sync();
 			const stopTime = Date.now();
 			const actual = Math.ceil((stopTime - startTime) / 1000);
 

@@ -1,9 +1,8 @@
-import { Meteor } from 'meteor/meteor';
-import { Match } from 'meteor/check';
-import { Rooms, Messages } from '@rocket.chat/models';
+import { Message } from '@rocket.chat/core-services';
 import type { IUser } from '@rocket.chat/core-typings';
-
-import { settings } from '../../../settings/server';
+import { Rooms } from '@rocket.chat/models';
+import { Match } from 'meteor/check';
+import { Meteor } from 'meteor/meteor';
 
 export async function saveRoomReadOnly(
 	rid: string,
@@ -21,21 +20,9 @@ export async function saveRoomReadOnly(
 
 	if (result && sendMessage) {
 		if (readOnly) {
-			await Messages.createWithTypeRoomIdMessageUserAndUnread(
-				'room-set-read-only',
-				rid,
-				'',
-				user,
-				settings.get('Message_Read_Receipt_Enabled'),
-			);
+			await Message.saveSystemMessage('room-set-read-only', rid, '', user);
 		} else {
-			await Messages.createWithTypeRoomIdMessageUserAndUnread(
-				'room-removed-read-only',
-				rid,
-				'',
-				user,
-				settings.get('Message_Read_Receipt_Enabled'),
-			);
+			await Message.saveSystemMessage('room-removed-read-only', rid, '', user);
 		}
 	}
 	return result;

@@ -2,13 +2,15 @@ import type {
 	IRoom,
 	IStats,
 	IUser,
+	IVoIPVideoConference,
 	VideoConference,
 	VideoConferenceCapabilities,
 	VideoConferenceCreateData,
 	VideoConferenceInstructions,
 } from '@rocket.chat/core-typings';
+import type { InsertionModel } from '@rocket.chat/model-typings';
 import type { PaginatedResult } from '@rocket.chat/rest-typings';
-import type { IBlock } from '@rocket.chat/apps-engine/definition/uikit';
+import type * as UiKit from '@rocket.chat/ui-kit';
 
 export type VideoConferenceJoinOptions = {
 	mic?: boolean;
@@ -19,7 +21,7 @@ export interface IVideoConfService {
 	create(data: VideoConferenceCreateData, useAppUser?: boolean): Promise<VideoConferenceInstructions>;
 	start(caller: IUser['_id'], rid: string, options: { title?: string; allowRinging?: boolean }): Promise<VideoConferenceInstructions>;
 	join(uid: IUser['_id'] | undefined, callId: VideoConference['_id'], options: VideoConferenceJoinOptions): Promise<string>;
-	getInfo(callId: VideoConference['_id'], uid: IUser['_id'] | undefined): Promise<IBlock[]>;
+	getInfo(callId: VideoConference['_id'], uid: IUser['_id'] | undefined): Promise<UiKit.LayoutBlock[]>;
 	cancel(uid: IUser['_id'], callId: VideoConference['_id']): Promise<void>;
 	get(callId: VideoConference['_id']): Promise<Omit<VideoConference, 'providerData'> | null>;
 	getUnfiltered(callId: VideoConference['_id']): Promise<VideoConference | null>;
@@ -40,4 +42,6 @@ export interface IVideoConfService {
 		caller: IUser['_id'],
 		params: { callId: VideoConference['_id']; uid: IUser['_id']; rid: IRoom['_id'] },
 	): Promise<boolean>;
+	assignDiscussionToConference(callId: VideoConference['_id'], rid: IRoom['_id'] | undefined): Promise<void>;
+	createVoIP(data: InsertionModel<IVoIPVideoConference>): Promise<IVoIPVideoConference['_id'] | undefined>;
 }

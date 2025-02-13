@@ -1,10 +1,11 @@
-import { Box, Button, ButtonGroup, Skeleton, Throbber, InputBox, Callout } from '@rocket.chat/fuselage';
-import { useEndpoint, useTranslation } from '@rocket.chat/ui-contexts';
+import { Callout } from '@rocket.chat/fuselage';
+import { useEndpoint } from '@rocket.chat/ui-contexts';
 import { useQuery } from '@tanstack/react-query';
-import type { FC } from 'react';
-import React, { useMemo } from 'react';
+import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import EditCustomEmoji from './EditCustomEmoji';
+import { FormSkeleton } from '../../../components/Skeleton';
 
 type EditCustomEmojiWithDataProps = {
 	_id: string;
@@ -12,39 +13,23 @@ type EditCustomEmojiWithDataProps = {
 	onChange: () => void;
 };
 
-const EditCustomEmojiWithData: FC<EditCustomEmojiWithDataProps> = ({ _id, onChange, close, ...props }) => {
-	const t = useTranslation();
-	const query = useMemo(() => ({ query: JSON.stringify({ _id }) }), [_id]);
+const EditCustomEmojiWithData = ({ _id, onChange, close, ...props }: EditCustomEmojiWithDataProps) => {
+	const { t } = useTranslation();
+	const query = useMemo(() => ({ _id }), [_id]);
 
 	const getEmojis = useEndpoint('GET', '/v1/emoji-custom.list');
 
-	const { data, isLoading, error, refetch } = useQuery(['custom-emojis', query], async () => {
-		const emoji = await getEmojis(query);
-		return emoji;
+	const { data, isPending, error, refetch } = useQuery({
+		queryKey: ['custom-emojis', query],
+
+		queryFn: async () => {
+			const emoji = await getEmojis(query);
+			return emoji;
+		},
 	});
 
-	if (isLoading) {
-		return (
-			<Box pb='x20'>
-				<Skeleton mbs='x8' />
-				<InputBox.Skeleton w='full' />
-				<Skeleton mbs='x8' />
-				<InputBox.Skeleton w='full' />
-				<ButtonGroup stretch w='full' mbs='x8'>
-					<Button disabled>
-						<Throbber inheritColor />
-					</Button>
-					<Button primary disabled>
-						<Throbber inheritColor />
-					</Button>
-				</ButtonGroup>
-				<ButtonGroup stretch w='full' mbs='x8'>
-					<Button danger disabled>
-						<Throbber inheritColor />
-					</Button>
-				</ButtonGroup>
-			</Box>
-		);
+	if (isPending) {
+		return <FormSkeleton pi={20} />;
 	}
 
 	if (error || !data || !data.emojis || data.emojis.update.length < 1) {

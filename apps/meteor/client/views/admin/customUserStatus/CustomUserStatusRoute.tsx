@@ -1,16 +1,22 @@
 import { Button, ButtonGroup } from '@rocket.chat/fuselage';
 import { useRoute, useRouteParameter, usePermission, useTranslation, useSetting } from '@rocket.chat/ui-contexts';
 import type { ReactElement } from 'react';
-import React, { useCallback, useRef, useEffect } from 'react';
+import { useCallback, useRef, useEffect } from 'react';
 
-import Page from '../../../components/Page';
-import VerticalBar from '../../../components/VerticalBar';
-import { useIsEnterprise } from '../../../hooks/useIsEnterprise';
-import NotAuthorizedPage from '../../notAuthorized/NotAuthorizedPage';
 import CustomUserActiveConnections from './CustomUserActiveConnections';
 import CustomUserStatusFormWithData from './CustomUserStatusFormWithData';
 import CustomUserStatusService from './CustomUserStatusService';
 import CustomUserStatusTable from './CustomUserStatusTable';
+import {
+	Contextualbar,
+	ContextualbarHeader,
+	ContextualbarClose,
+	ContextualbarTitle,
+	ContextualbarDialog,
+} from '../../../components/Contextualbar';
+import { Page, PageHeader, PageContent } from '../../../components/Page';
+import { useIsEnterprise } from '../../../hooks/useIsEnterprise';
+import NotAuthorizedPage from '../../notAuthorized/NotAuthorizedPage';
 
 const CustomUserStatusRoute = (): ReactElement => {
 	const t = useTranslation();
@@ -19,7 +25,7 @@ const CustomUserStatusRoute = (): ReactElement => {
 	const id = useRouteParameter('id');
 	const canManageUserStatus = usePermission('manage-user-status');
 	const { data: license } = useIsEnterprise();
-	const presenceDisabled = useSetting<boolean>('Presence_broadcast_disabled');
+	const presenceDisabled = useSetting('Presence_broadcast_disabled', false);
 
 	useEffect(() => {
 		presenceDisabled && route.push({ context: 'presence-service' });
@@ -57,30 +63,34 @@ const CustomUserStatusRoute = (): ReactElement => {
 	return (
 		<Page flexDirection='row'>
 			<Page name='admin-user-status'>
-				<Page.Header title={t('User_Status')}>
+				<PageHeader title={t('User_Status')}>
 					{!license?.isEnterprise && <CustomUserActiveConnections />}
 					<ButtonGroup>
 						<Button onClick={handlePresenceServiceClick}>{t('Presence_service')}</Button>
 						<Button onClick={handleNewButtonClick}>{t('New_custom_status')}</Button>
 					</ButtonGroup>
-				</Page.Header>
-				<Page.Content>
+				</PageHeader>
+				<PageContent>
 					<CustomUserStatusTable reload={reload} onClick={handleItemClick} />
-				</Page.Content>
+				</PageContent>
 			</Page>
 			{context && (
-				<VerticalBar bg='light' flexShrink={0}>
-					<VerticalBar.Header>
-						{context === 'edit' && t('Custom_User_Status_Edit')}
-						{context === 'new' && t('Custom_User_Status_Add')}
-						{context === 'presence-service' && t('Presence_service_cap')}
-						<VerticalBar.Close onClick={handleClose} />
-					</VerticalBar.Header>
-					{context === 'presence-service' && <CustomUserStatusService />}
-					{(context === 'new' || context === 'edit') && (
-						<CustomUserStatusFormWithData _id={id} onClose={handleClose} onReload={handleReload} />
-					)}
-				</VerticalBar>
+				<ContextualbarDialog>
+					<Contextualbar>
+						<ContextualbarHeader>
+							<ContextualbarTitle>
+								{context === 'edit' && t('Custom_User_Status_Edit')}
+								{context === 'new' && t('Custom_User_Status_Add')}
+								{context === 'presence-service' && t('Presence_service_cap')}
+							</ContextualbarTitle>
+							<ContextualbarClose onClick={handleClose} />
+						</ContextualbarHeader>
+						{context === 'presence-service' && <CustomUserStatusService />}
+						{(context === 'new' || context === 'edit') && (
+							<CustomUserStatusFormWithData _id={id} onClose={handleClose} onReload={handleReload} />
+						)}
+					</Contextualbar>
+				</ContextualbarDialog>
 			)}
 		</Page>
 	);

@@ -1,14 +1,14 @@
-import { Meteor } from 'meteor/meteor';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
 import type { IMessage, IUser } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Meteor } from 'meteor/meteor';
 
-import { ChatMessage, Rooms } from '../../../models/client';
-import { settings } from '../../../settings/client';
-import { callbacks } from '../../../../lib/callbacks';
-import { t } from '../../../utils/client';
-import { dispatchToastMessage } from '../../../../client/lib/toast';
 import { onClientMessageReceived } from '../../../../client/lib/onClientMessageReceived';
+import { dispatchToastMessage } from '../../../../client/lib/toast';
+import { callbacks } from '../../../../lib/callbacks';
 import { trim } from '../../../../lib/utils/stringUtils';
+import { Messages, Rooms } from '../../../models/client';
+import { settings } from '../../../settings/client';
+import { t } from '../../../utils/lib/i18n';
 
 Meteor.methods<ServerMethods>({
 	async sendMessage(message) {
@@ -16,11 +16,11 @@ Meteor.methods<ServerMethods>({
 		if (!uid || trim(message.msg) === '') {
 			return false;
 		}
-		const messageAlreadyExists = message._id && ChatMessage.findOne({ _id: message._id });
+		const messageAlreadyExists = message._id && Messages.findOne({ _id: message._id });
 		if (messageAlreadyExists) {
 			return dispatchToastMessage({ type: 'error', message: t('Message_Already_Sent') });
 		}
-		const user = (await Meteor.userAsync()) as IUser | null;
+		const user = Meteor.user() as IUser | null;
 		if (!user?.username) {
 			throw new Meteor.Error('error-invalid-user', 'Invalid user', { method: 'sendMessage' });
 		}
@@ -28,7 +28,7 @@ Meteor.methods<ServerMethods>({
 		message.u = {
 			_id: uid,
 			username: user.username,
-			...(settings.get('UI_Use_Real_Name') && user.name && { name: user.name }),
+			name: user.name || '',
 		};
 		message.temp = true;
 		if (settings.get('Message_Read_Receipt_Enabled')) {
@@ -36,15 +36,14 @@ Meteor.methods<ServerMethods>({
 		}
 
 		// If the room is federated, send the message to matrix only
-		const federated = Rooms.findOne({ _id: message.rid }, { fields: { federated: 1 } })?.federated;
-		if (federated) {
+		const room = Rooms.findOne({ _id: message.rid }, { fields: { federated: 1, name: 1 } });
+		if (room?.federated) {
 			return;
 		}
 
-		message = callbacks.run('beforeSaveMessage', message);
-		await onClientMessageReceived(message as IMessage).then(function (message) {
-			ChatMessage.insert(message);
-			return callbacks.run('afterSaveMessage', message);
+		await onClientMessageReceived(message as IMessage).then((message) => {
+			Messages.insert(message);
+			return callbacks.run('afterSaveMessage', message, { room });
 		});
 	},
 });

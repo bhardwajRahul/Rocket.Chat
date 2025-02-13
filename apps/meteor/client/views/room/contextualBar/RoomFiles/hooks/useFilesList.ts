@@ -1,12 +1,12 @@
-import { useUserRoom, useUserId, useEndpoint } from '@rocket.chat/ui-contexts';
+import { Base64 } from '@rocket.chat/base64';
+import { useUserRoom, useEndpoint } from '@rocket.chat/ui-contexts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { e2e } from '../../../../../../app/e2e/client/rocketchat.e2e';
 import { useScrollableRecordList } from '../../../../../hooks/lists/useScrollableRecordList';
-import { useStreamUpdatesForMessageList } from '../../../../../hooks/lists/useStreamUpdatesForMessageList';
 import { useComponentDidUpdate } from '../../../../../hooks/useComponentDidUpdate';
 import type { FilesListOptions } from '../../../../../lib/lists/FilesList';
 import { FilesList } from '../../../../../lib/lists/FilesList';
-import type { MessageList } from '../../../../../lib/lists/MessageList';
 import { getConfig } from '../../../../../lib/utils/getConfig';
 
 export const useFilesList = (
@@ -19,8 +19,7 @@ export const useFilesList = (
 } => {
 	const [filesList, setFilesList] = useState(() => new FilesList(options));
 	const reload = useCallback(() => setFilesList(new FilesList(options)), [options]);
-	const room = useUserRoom(options.rid as string);
-	const uid = useUserId();
+	const room = useUserRoom(options.rid);
 
 	useComponentDidUpdate(() => {
 		options && reload();
@@ -45,25 +44,44 @@ export const useFilesList = (
 	const getFiles = useEndpoint('GET', apiEndPoint);
 
 	const fetchMessages = useCallback(
-		async (start, end) => {
+		async (start: number, end: number) => {
 			const { files, total } = await getFiles({
 				roomId: options.rid,
 				offset: start,
 				count: end,
 				sort: JSON.stringify({ uploadedAt: -1 }),
-				query: JSON.stringify({
-					name: { $regex: options.text || '', $options: 'i' },
-					...(options.type !== 'all' && {
-						typeGroup: options.type,
-					}),
+				...(options.text ? { name: options.text } : {}),
+				...(options.type !== 'all' && {
+					typeGroup: options.type,
 				}),
 			});
 
+			const items = files.map((file) => ({
+				...file,
+				uploadedAt: file.uploadedAt ? new Date(file.uploadedAt) : undefined,
+				modifiedAt: file.modifiedAt ? new Date(file.modifiedAt) : undefined,
+			}));
+
+			for await (const file of items) {
+				if (file.rid && file.content) {
+					const e2eRoom = await e2e.getInstanceByRoomId(file.rid);
+					if (e2eRoom?.shouldConvertReceivedMessages()) {
+						const decrypted = await e2e.decryptFileContent(file);
+						const key = Base64.encode(
+							JSON.stringify({
+								...decrypted.encryption,
+								name: String.fromCharCode(...new TextEncoder().encode(decrypted.name)),
+								type: decrypted.type,
+							}),
+						);
+						decrypted.path = `/file-decrypt${decrypted.path}?key=${key}`;
+						Object.assign(file, decrypted);
+					}
+				}
+			}
+
 			return {
-				items: files.map((file) => ({
-					...file,
-					_updatedAt: new Date(file._updatedAt),
-				})),
+				items,
 				itemCount: total,
 			};
 		},
@@ -75,9 +93,6 @@ export const useFilesList = (
 		fetchMessages,
 		useMemo(() => parseInt(`${getConfig('discussionListSize', 10)}`), []),
 	);
-
-	// TODO: chapter day : frontend create useStreamUpdatesForUploadList
-	useStreamUpdatesForMessageList(filesList as unknown as MessageList, uid, options.rid || null);
 
 	return {
 		reload,

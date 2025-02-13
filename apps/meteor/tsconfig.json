@@ -7,7 +7,7 @@
 
 		"allowJs": true,
 		"checkJs": false,
-		"jsx": "react",
+		"jsx": "react-jsx",
 		"noEmit": true,
 
 		/* Strict Type-Checking Options */
@@ -21,7 +21,8 @@
 		"baseUrl": ".",
 		"paths": {
 			/* Support absolute /imports/* with a leading '/' */
-			"/*": ["*"]
+			"/*": ["*"],
+			"meteor/*": ["./node_modules/@types/meteor/*", ".meteor/local/types/packages.d.ts"]
 		},
 		"preserveSymlinks": true
 
@@ -31,10 +32,15 @@
 		// "emitDecoratorMetadata": true,
 		// "experimentalDecorators": true,
 	},
+	"include": [
+		"./**/*",
+		"./.storybook/**/*",
+		"./jest.config.ts",
+		"./.scripts/**/*"
+	],
 	"exclude": [
 		"**/node_modules/**",
 		"./.meteor/**",
-		"./packages/**",
 		"./imports/client/**",
 		"**/dist/**",
 		"./public/**"

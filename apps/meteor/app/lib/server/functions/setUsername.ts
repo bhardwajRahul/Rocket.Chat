@@ -1,34 +1,84 @@
-import { Meteor } from 'meteor/meteor';
-import { Accounts } from 'meteor/accounts-base';
-import type { IUser } from '@rocket.chat/core-typings';
-import { Invites } from '@rocket.chat/models';
 import { api } from '@rocket.chat/core-services';
+import type { IUser } from '@rocket.chat/core-typings';
+import type { Updater } from '@rocket.chat/models';
+import { Invites, Users } from '@rocket.chat/models';
+import { Accounts } from 'meteor/accounts-base';
+import { Meteor } from 'meteor/meteor';
+import _ from 'underscore';
 
-import { settings } from '../../../settings/server';
-import { Users } from '../../../models/server';
 import { hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
+import { settings } from '../../../settings/server';
 import { RateLimiter } from '../lib';
 import { addUserToRoom } from './addUserToRoom';
-import { setUserAvatar } from '.';
 import { checkUsernameAvailability } from './checkUsernameAvailability';
 import { getAvatarSuggestionForUser } from './getAvatarSuggestionForUser';
+import { joinDefaultChannels } from './joinDefaultChannels';
+import { saveUserIdentity } from './saveUserIdentity';
+import { setUserAvatar } from './setUserAvatar';
+import { validateUsername } from './validateUsername';
+import { callbacks } from '../../../../lib/callbacks';
 import { SystemLogger } from '../../../../server/lib/logger/system';
+import { notifyOnUserChange } from '../lib/notifyListener';
 
-export const _setUsername = async function (userId: string, u: string, fullUser: IUser): Promise<unknown> {
+export const setUsernameWithValidation = async (userId: string, username: string, joinDefaultChannelsSilenced?: boolean): Promise<void> => {
+	if (!username) {
+		throw new Meteor.Error('error-invalid-username', 'Invalid username', { method: 'setUsername' });
+	}
+
+	const user = await Users.findOneById(userId);
+
+	if (!user) {
+		throw new Meteor.Error('error-invalid-user', 'Invalid user', { method: 'setUsername' });
+	}
+
+	if (user.username && !settings.get('Accounts_AllowUsernameChange')) {
+		throw new Meteor.Error('error-not-allowed', 'Not allowed');
+	}
+
+	if (user.username === username || (user.username && user.username.toLowerCase() === username.toLowerCase())) {
+		return;
+	}
+
+	if (!validateUsername(username)) {
+		throw new Meteor.Error(
+			'username-invalid',
+			`${_.escape(username)} is not a valid username, use only letters, numbers, dots, hyphens and underscores`,
+		);
+	}
+
+	if (!(await checkUsernameAvailability(username))) {
+		throw new Meteor.Error('error-field-unavailable', `<strong>${_.escape(username)}</strong> is already in use :(`, {
+			method: 'setUsername',
+			field: username,
+		});
+	}
+
+	if (!(await saveUserIdentity({ _id: user._id, username }))) {
+		throw new Meteor.Error('error-could-not-change-username', 'Could not change username', {
+			method: 'setUsername',
+		});
+	}
+
+	if (!user.username) {
+		await joinDefaultChannels(user._id, joinDefaultChannelsSilenced);
+		setImmediate(async () => callbacks.run('afterCreateUser', user));
+	}
+
+	void notifyOnUserChange({ clientAction: 'updated', id: user._id, diff: { username } });
+};
+
+export const _setUsername = async function (userId: string, u: string, fullUser: IUser, updater?: Updater<IUser>): Promise<unknown> {
 	const username = u.trim();
+
 	if (!userId || !username) {
 		return false;
 	}
-	let nameValidation;
-	try {
-		nameValidation = new RegExp(`^${settings.get('UTF8_User_Names_Validation')}$`);
-	} catch (error) {
-		nameValidation = new RegExp('^[0-9a-zA-Z-_.]+$');
-	}
-	if (!nameValidation.test(username)) {
+
+	if (!validateUsername(username)) {
 		return false;
 	}
-	const user = fullUser || Users.findOneById(userId);
+
+	const user = fullUser || (await Users.findOneById(userId));
 	// User already has desired username, return
 	if (user.username === username) {
 		return user;
@@ -43,7 +93,7 @@ export const _setUsername = async function (userId: string, u: string, fullUser:
 	// If first time setting username, send Enrollment Email
 	try {
 		if (!previousUsername && user.emails && user.emails.length > 0 && settings.get('Accounts_Enrollment_Email')) {
-			Meteor.defer(() => {
+			setImmediate(() => {
 				Accounts.sendEnrollmentEmail(user._id);
 			});
 		}
@@ -51,26 +101,25 @@ export const _setUsername = async function (userId: string, u: string, fullUser:
 		SystemLogger.error(e);
 	}
 	// Set new username*
-	Users.setUsername(user._id, username);
+	// TODO: use updater for setting the username and handle possible side effects in addUserToRoom
+	await Users.setUsername(user._id, username);
 	user.username = username;
+
 	if (!previousUsername && settings.get('Accounts_SetDefaultAvatar') === true) {
-		// eslint-disable-next-line @typescript-eslint/ban-types
-		const avatarSuggestions = (await getAvatarSuggestionForUser(user)) as {};
-		let gravatar;
-		Object.keys(avatarSuggestions).some((service) => {
-			const avatarData = avatarSuggestions[+service as keyof typeof avatarSuggestions];
+		const avatarSuggestions = await getAvatarSuggestionForUser(user);
+		let avatarData;
+		let serviceName = 'gravatar';
+
+		for (const service of Object.keys(avatarSuggestions)) {
+			avatarData = avatarSuggestions[service];
 			if (service !== 'gravatar') {
-				// eslint-disable-next-line dot-notation
-				setUserAvatar(user, avatarData['blob'], avatarData['contentType'], service);
-				gravatar = null;
-				return true;
+				serviceName = service;
+				break;
 			}
-			gravatar = avatarData;
-			return false;
-		});
-		if (gravatar != null) {
-			// eslint-disable-next-line dot-notation
-			setUserAvatar(user, gravatar['blob'], gravatar['contentType'], 'gravatar');
+		}
+
+		if (avatarData) {
+			await setUserAvatar(user, avatarData.blob, avatarData.contentType, serviceName, undefined, updater);
 		}
 	}
 

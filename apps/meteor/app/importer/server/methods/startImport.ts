@@ -1,12 +1,13 @@
-import { Meteor } from 'meteor/meteor';
-import type { StartImportParamsPOST } from '@rocket.chat/rest-typings';
+import type { IUser } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
 import { Imports } from '@rocket.chat/models';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
+import { isStartImportParamsPOST, type StartImportParamsPOST } from '@rocket.chat/rest-typings';
+import { Meteor } from 'meteor/meteor';
 
+import { Importers } from '..';
 import { hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
-import { Importers, Selection, SelectionChannel, SelectionUser } from '..';
 
-export const executeStartImport = async ({ input }: StartImportParamsPOST) => {
+export const executeStartImport = async ({ input }: StartImportParamsPOST, startedByUserId: IUser['_id']) => {
 	const operation = await Imports.findLastImport();
 	if (!operation) {
 		throw new Meteor.Error('error-operation-not-found', 'Import Operation Not Found', 'startImport');
@@ -18,29 +19,12 @@ export const executeStartImport = async ({ input }: StartImportParamsPOST) => {
 		throw new Meteor.Error('error-importer-not-defined', `The importer (${importerKey}) has no import class defined.`, 'startImport');
 	}
 
-	importer.instance = new importer.importer(importer, operation); // eslint-disable-line new-cap
-	await importer.instance.build();
+	const instance = new importer.importer(importer, operation); // eslint-disable-line new-cap
 
-	const usersSelection = input.users.map(
-		(user) => new SelectionUser(user.user_id, user.username, user.email, user.is_deleted, user.is_bot, user.do_import),
-	);
-	const channelsSelection = input.channels.map(
-		(channel) =>
-			new SelectionChannel(
-				channel.channel_id,
-				channel.name,
-				channel.is_archived,
-				channel.do_import,
-				channel.is_private,
-				channel.creator,
-				channel.is_direct,
-			),
-	);
-	const selection = new Selection(importer.name, usersSelection, channelsSelection, 0);
-	return importer.instance.startImport(selection);
+	await instance.startImport(input, startedByUserId);
 };
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		startImport(params: StartImportParamsPOST): void;
@@ -49,6 +33,10 @@ declare module '@rocket.chat/ui-contexts' {
 
 Meteor.methods<ServerMethods>({
 	async startImport({ input }: StartImportParamsPOST) {
+		if (!input || typeof input !== 'object' || !isStartImportParamsPOST({ input })) {
+			throw new Meteor.Error(`Invalid Selection data provided to the importer.`);
+		}
+
 		const userId = Meteor.userId();
 		// Takes name and object with users / channels selected to import
 		if (!userId) {
@@ -59,6 +47,6 @@ Meteor.methods<ServerMethods>({
 			throw new Meteor.Error('error-action-not-allowed', 'Importing is not allowed', 'startImport');
 		}
 
-		return executeStartImport({ input });
+		return executeStartImport({ input }, userId);
 	},
 });

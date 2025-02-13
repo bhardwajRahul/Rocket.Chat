@@ -1,21 +1,21 @@
 import type { IUser } from '@rocket.chat/core-typings';
-import { Rooms, Subscriptions } from '@rocket.chat/models';
+import { Rooms, Subscriptions, Users } from '@rocket.chat/models';
 
-import { Users } from '../../../models/server';
+import { notifyOnSubscriptionChangedByRoomId } from '../lib/notifyListener';
 
 const getFname = (members: IUser[]): string => members.map(({ name, username }) => name || username).join(', ');
 const getName = (members: IUser[]): string => members.map(({ username }) => username).join(',');
 
 async function getUsersWhoAreInTheSameGroupDMsAs(user: IUser) {
 	// add all users to single array so we can fetch details from them all at once
-	const rooms = Rooms.findGroupDMsByUids([user._id], { projection: { uids: 1 } });
-	if ((await rooms.count()) === 0) {
+	if ((await Rooms.countGroupDMsByUids([user._id])) === 0) {
 		return;
 	}
 
 	const userIds = new Set();
 	const users = new Map();
 
+	const rooms = Rooms.findGroupDMsByUids([user._id], { projection: { uids: 1 } });
 	await rooms.forEach((room) => {
 		if (!room.uids) {
 			return;
@@ -24,7 +24,9 @@ async function getUsersWhoAreInTheSameGroupDMsAs(user: IUser) {
 		room.uids.forEach((uid) => uid !== user._id && userIds.add(uid));
 	});
 
-	Users.findByIds([...userIds], { fields: { username: 1, name: 1 } }).forEach((user: IUser) => users.set(user._id, user));
+	(await Users.findByIds([...userIds], { projection: { username: 1, name: 1 } }).toArray()).forEach((user: IUser) =>
+		users.set(user._id, user),
+	);
 
 	return users;
 }
@@ -63,7 +65,10 @@ export const updateGroupDMsName = async (userThatChangedName: IUser): Promise<vo
 		const subs = Subscriptions.findByRoomId(room._id, { projection: { '_id': 1, 'u._id': 1 } });
 		for await (const sub of subs) {
 			const otherMembers = sortedMembers.filter(({ _id }) => _id !== sub.u._id);
-			await Subscriptions.updateNameAndFnameById(sub._id, getName(otherMembers), getFname(otherMembers));
+			const updateNameRespose = await Subscriptions.updateNameAndFnameById(sub._id, getName(otherMembers), getFname(otherMembers));
+			if (updateNameRespose.modifiedCount) {
+				void notifyOnSubscriptionChangedByRoomId(room._id);
+			}
 		}
 	}
 };

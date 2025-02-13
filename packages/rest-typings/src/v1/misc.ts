@@ -164,20 +164,21 @@ const MethodCallAnonSchema = {
 
 export const isMethodCallAnonProps = ajv.compile<MethodCallAnon>(MethodCallAnonSchema);
 
-type PwGetPolicyReset = { token: string };
+type Fingerprint = { setDeploymentAs: 'new-workspace' | 'updated-configuration' };
 
-const PwGetPolicyResetSchema = {
+const FingerprintSchema = {
 	type: 'object',
 	properties: {
-		token: {
+		setDeploymentAs: {
 			type: 'string',
+			enum: ['new-workspace', 'updated-configuration'],
 		},
 	},
-	required: ['token'],
+	required: ['setDeploymentAs'],
 	additionalProperties: false,
 };
 
-export const validateParamsPwGetPolicyRest = ajv.compile<PwGetPolicyReset>(PwGetPolicyResetSchema);
+export const isFingerprintProps = ajv.compile<Fingerprint>(FingerprintSchema);
 
 export type MiscEndpoints = {
 	'/v1/stdout.queue': {
@@ -206,26 +207,31 @@ export type MiscEndpoints = {
 	'/v1/pw.getPolicy': {
 		GET: () => {
 			enabled: boolean;
-			policy: [name: string, options?: Record<string, unknown>][];
-		};
-	};
-
-	'/v1/pw.getPolicyReset': {
-		GET: (params: PwGetPolicyReset) => {
-			enabled: boolean;
-			policy: [name: string, options?: Record<string, unknown>][];
+			policy: [name: string, value?: Record<string, number>][];
 		};
 	};
 
 	'/v1/method.call/:method': {
 		POST: (params: { message: string }) => {
-			message: unknown;
+			message: string;
 		};
 	};
 
 	'/v1/method.callAnon/:method': {
 		POST: (params: { message: string }) => {
-			message: unknown;
+			message: string;
+		};
+	};
+
+	'/v1/fingerprint': {
+		POST: (params: Fingerprint) => {
+			success: boolean;
+		};
+	};
+
+	'/v1/smtp.check': {
+		GET: () => {
+			isSMTPConfigured: boolean;
 		};
 	};
 };

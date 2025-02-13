@@ -1,43 +1,41 @@
-import { Meteor } from 'meteor/meteor';
-import { Match } from 'meteor/check';
-import type { IRoom, IRoomWithRetentionPolicy, IUser, MessageTypesValues } from '@rocket.chat/core-typings';
-import { TEAM_TYPE } from '@rocket.chat/core-typings';
 import { Team } from '@rocket.chat/core-services';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
-import { Rooms as RoomsAsync } from '@rocket.chat/models';
+import type { IRoom, IRoomWithRetentionPolicy, IUser, MessageTypesValues } from '@rocket.chat/core-typings';
+import { TEAM_TYPE, isValidSidepanel } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Rooms, Users } from '@rocket.chat/models';
+import { Match } from 'meteor/check';
+import { Meteor } from 'meteor/meteor';
 
-import { setRoomAvatar } from '../../../lib/server/functions/setRoomAvatar';
+import { RoomSettingsEnum } from '../../../../definition/IRoomTypeConfig';
+import { roomCoordinator } from '../../../../server/lib/rooms/roomCoordinator';
 import { hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
-import { Rooms } from '../../../models/server';
-import { saveRoomName } from '../functions/saveRoomName';
-import { saveRoomTopic } from '../functions/saveRoomTopic';
+import { setRoomAvatar } from '../../../lib/server/functions/setRoomAvatar';
+import { notifyOnRoomChangedById } from '../../../lib/server/lib/notifyListener';
+import { saveReactWhenReadOnly } from '../functions/saveReactWhenReadOnly';
 import { saveRoomAnnouncement } from '../functions/saveRoomAnnouncement';
 import { saveRoomCustomFields } from '../functions/saveRoomCustomFields';
 import { saveRoomDescription } from '../functions/saveRoomDescription';
-import { saveRoomType } from '../functions/saveRoomType';
-import { saveRoomReadOnly } from '../functions/saveRoomReadOnly';
-import { saveReactWhenReadOnly } from '../functions/saveReactWhenReadOnly';
-import { saveRoomSystemMessages } from '../functions/saveRoomSystemMessages';
 import { saveRoomEncrypted } from '../functions/saveRoomEncrypted';
-import { saveStreamingOptions } from '../functions/saveStreamingOptions';
-import { roomCoordinator } from '../../../../server/lib/rooms/roomCoordinator';
-import { RoomSettingsEnum } from '../../../../definition/IRoomTypeConfig';
+import { saveRoomName } from '../functions/saveRoomName';
+import { saveRoomReadOnly } from '../functions/saveRoomReadOnly';
+import { saveRoomSystemMessages } from '../functions/saveRoomSystemMessages';
+import { saveRoomTopic } from '../functions/saveRoomTopic';
+import { saveRoomType } from '../functions/saveRoomType';
 
 type RoomSettings = {
 	roomAvatar: string;
 	featured: boolean;
 	roomName: string | undefined;
 	roomTopic: string;
-	roomAnnouncement: unknown;
-	roomCustomFields: unknown;
-	roomDescription: unknown;
-	roomType: unknown;
+	roomAnnouncement: string;
+	roomCustomFields: Record<string, any>;
+	roomDescription: string;
+	roomType: IRoom['t'];
 	readOnly: boolean;
 	reactWhenReadOnly: boolean;
 	systemMessages: MessageTypesValues[];
 	default: boolean;
 	joinCode: string;
-	streamingOptions: unknown;
 	retentionEnabled: boolean;
 	retentionMaxAge: number;
 	retentionExcludePinned: boolean;
@@ -49,6 +47,7 @@ type RoomSettings = {
 		favorite: boolean;
 		defaultValue: boolean;
 	};
+	sidepanel?: IRoom['sidepanel'];
 };
 
 type RoomSettingsValidators = {
@@ -80,20 +79,57 @@ const validators: RoomSettingsValidators = {
 			});
 		}
 	},
+	async sidepanel({ room, userId, value }) {
+		if (!room.teamMain) {
+			throw new Meteor.Error('error-action-not-allowed', 'Invalid room', {
+				method: 'saveRoomSettings',
+			});
+		}
+
+		if (!(await hasPermissionAsync(userId, 'edit-team', room._id))) {
+			throw new Meteor.Error('error-action-not-allowed', 'You do not have permission to change sidepanel items', {
+				method: 'saveRoomSettings',
+			});
+		}
+
+		if (!isValidSidepanel(value)) {
+			throw new Meteor.Error('error-invalid-sidepanel');
+		}
+	},
+
 	async roomType({ userId, room, value }) {
 		if (value === room.t) {
 			return;
 		}
 
-		if (value === 'c' && !(await hasPermissionAsync(userId, 'create-c'))) {
+		if (value === 'c' && !room.teamId && !(await hasPermissionAsync(userId, 'create-c'))) {
 			throw new Meteor.Error('error-action-not-allowed', 'Changing a private group to a public channel is not allowed', {
 				method: 'saveRoomSettings',
 				action: 'Change_Room_Type',
 			});
 		}
 
-		if (value === 'p' && !(await hasPermissionAsync(userId, 'create-p'))) {
+		if (value === 'p' && !room.teamId && !(await hasPermissionAsync(userId, 'create-p'))) {
 			throw new Meteor.Error('error-action-not-allowed', 'Changing a public channel to a private room is not allowed', {
+				method: 'saveRoomSettings',
+				action: 'Change_Room_Type',
+			});
+		}
+
+		if (!room.teamId) {
+			return;
+		}
+		const team = await Team.getInfoById(room.teamId);
+
+		if (value === 'c' && !(await hasPermissionAsync(userId, 'create-team-channel', team?.roomId))) {
+			throw new Meteor.Error('error-action-not-allowed', `Changing a team's private group to a public channel is not allowed`, {
+				method: 'saveRoomSettings',
+				action: 'Change_Room_Type',
+			});
+		}
+
+		if (value === 'p' && !(await hasPermissionAsync(userId, 'create-team-group', team?.roomId))) {
+			throw new Meteor.Error('error-action-not-allowed', `Changing a team's public channel to a private room is not allowed`, {
 				method: 'saveRoomSettings',
 				action: 'Change_Room_Type',
 			});
@@ -117,14 +153,10 @@ const validators: RoomSettingsValidators = {
 		}
 	},
 	async retentionEnabled({ userId, value, room, rid }) {
-		if (!hasRetentionPolicy(room)) {
-			throw new Meteor.Error('error-action-not-allowed', 'Room does not have retention policy', {
-				method: 'saveRoomSettings',
-				action: 'Editing_room',
-			});
-		}
-
-		if (!(await hasPermissionAsync(userId, 'edit-room-retention-policy', rid)) && value !== room.retention.enabled) {
+		if (
+			!(await hasPermissionAsync(userId, 'edit-room-retention-policy', rid)) &&
+			(!hasRetentionPolicy(room) || value !== room.retention.enabled)
+		) {
 			throw new Meteor.Error('error-action-not-allowed', 'Editing room retention policy is not allowed', {
 				method: 'saveRoomSettings',
 				action: 'Editing_room',
@@ -132,14 +164,10 @@ const validators: RoomSettingsValidators = {
 		}
 	},
 	async retentionMaxAge({ userId, value, room, rid }) {
-		if (!hasRetentionPolicy(room)) {
-			throw new Meteor.Error('error-action-not-allowed', 'Room does not have retention policy', {
-				method: 'saveRoomSettings',
-				action: 'Editing_room',
-			});
-		}
-
-		if (!(await hasPermissionAsync(userId, 'edit-room-retention-policy', rid)) && value !== room.retention.maxAge) {
+		if (
+			!(await hasPermissionAsync(userId, 'edit-room-retention-policy', rid)) &&
+			(!hasRetentionPolicy(room) || value !== room.retention.maxAge)
+		) {
 			throw new Meteor.Error('error-action-not-allowed', 'Editing room retention policy is not allowed', {
 				method: 'saveRoomSettings',
 				action: 'Editing_room',
@@ -147,14 +175,10 @@ const validators: RoomSettingsValidators = {
 		}
 	},
 	async retentionExcludePinned({ userId, value, room, rid }) {
-		if (!hasRetentionPolicy(room)) {
-			throw new Meteor.Error('error-action-not-allowed', 'Room does not have retention policy', {
-				method: 'saveRoomSettings',
-				action: 'Editing_room',
-			});
-		}
-
-		if (!(await hasPermissionAsync(userId, 'edit-room-retention-policy', rid)) && value !== room.retention.excludePinned) {
+		if (
+			!(await hasPermissionAsync(userId, 'edit-room-retention-policy', rid)) &&
+			(!hasRetentionPolicy(room) || value !== room.retention.excludePinned)
+		) {
 			throw new Meteor.Error('error-action-not-allowed', 'Editing room retention policy is not allowed', {
 				method: 'saveRoomSettings',
 				action: 'Editing_room',
@@ -162,14 +186,10 @@ const validators: RoomSettingsValidators = {
 		}
 	},
 	async retentionFilesOnly({ userId, value, room, rid }) {
-		if (!hasRetentionPolicy(room)) {
-			throw new Meteor.Error('error-action-not-allowed', 'Room does not have retention policy', {
-				method: 'saveRoomSettings',
-				action: 'Editing_room',
-			});
-		}
-
-		if (!(await hasPermissionAsync(userId, 'edit-room-retention-policy', rid)) && value !== room.retention.filesOnly) {
+		if (
+			!(await hasPermissionAsync(userId, 'edit-room-retention-policy', rid)) &&
+			(!hasRetentionPolicy(room) || value !== room.retention.filesOnly)
+		) {
 			throw new Meteor.Error('error-action-not-allowed', 'Editing room retention policy is not allowed', {
 				method: 'saveRoomSettings',
 				action: 'Editing_room',
@@ -177,14 +197,10 @@ const validators: RoomSettingsValidators = {
 		}
 	},
 	async retentionIgnoreThreads({ userId, value, room, rid }) {
-		if (!hasRetentionPolicy(room)) {
-			throw new Meteor.Error('error-action-not-allowed', 'Room does not have retention policy', {
-				method: 'saveRoomSettings',
-				action: 'Editing_room',
-			});
-		}
-
-		if (!(await hasPermissionAsync(userId, 'edit-room-retention-policy', rid)) && value !== room.retention.ignoreThreads) {
+		if (
+			!(await hasPermissionAsync(userId, 'edit-room-retention-policy', rid)) &&
+			(!hasRetentionPolicy(room) || value !== room.retention.ignoreThreads)
+		) {
 			throw new Meteor.Error('error-action-not-allowed', 'Editing room retention policy is not allowed', {
 				method: 'saveRoomSettings',
 				action: 'Editing_room',
@@ -233,6 +249,11 @@ const settingSavers: RoomSettingsSavers = {
 			await saveRoomTopic(rid, value, user);
 		}
 	},
+	async sidepanel({ value, rid, room }) {
+		if (JSON.stringify(value) !== JSON.stringify(room.sidepanel)) {
+			await Rooms.setSidepanelById(rid, value);
+		}
+	},
 	async roomAnnouncement({ value, room, rid, user }) {
 		if (!value && !room.announcement) {
 			return;
@@ -268,9 +289,6 @@ const settingSavers: RoomSettingsSavers = {
 			void Team.update(user._id, room.teamId, { type, updateRoom: false });
 		}
 	},
-	async streamingOptions({ value, rid }) {
-		await saveStreamingOptions(rid, value);
-	},
 	async readOnly({ value, room, rid, user }) {
 		if (value !== room.ro) {
 			await saveRoomReadOnly(rid, value, user);
@@ -287,44 +305,44 @@ const settingSavers: RoomSettingsSavers = {
 		}
 	},
 	async joinCode({ value, rid }) {
-		await RoomsAsync.setJoinCodeById(rid, String(value));
+		await Rooms.setJoinCodeById(rid, String(value));
 	},
 	async default({ value, rid }) {
-		await RoomsAsync.saveDefaultById(rid, value);
+		await Rooms.saveDefaultById(rid, value);
 	},
 	async featured({ value, rid }) {
-		await RoomsAsync.saveFeaturedById(rid, value);
+		await Rooms.saveFeaturedById(rid, value);
 	},
 	async retentionEnabled({ value, rid }) {
-		await RoomsAsync.saveRetentionEnabledById(rid, value);
+		await Rooms.saveRetentionEnabledById(rid, value);
 	},
 	async retentionMaxAge({ value, rid }) {
-		await RoomsAsync.saveRetentionMaxAgeById(rid, value);
+		await Rooms.saveRetentionMaxAgeById(rid, value);
 	},
 	async retentionExcludePinned({ value, rid }) {
-		await RoomsAsync.saveRetentionExcludePinnedById(rid, value);
+		await Rooms.saveRetentionExcludePinnedById(rid, value);
 	},
 	async retentionFilesOnly({ value, rid }) {
-		await RoomsAsync.saveRetentionFilesOnlyById(rid, value);
+		await Rooms.saveRetentionFilesOnlyById(rid, value);
 	},
 	async retentionIgnoreThreads({ value, rid }) {
-		await RoomsAsync.saveRetentionIgnoreThreadsById(rid, value);
+		await Rooms.saveRetentionIgnoreThreadsById(rid, value);
 	},
 	async retentionOverrideGlobal({ value, rid }) {
-		await RoomsAsync.saveRetentionOverrideGlobalById(rid, value);
+		await Rooms.saveRetentionOverrideGlobalById(rid, value);
 	},
 	async encrypted({ value, room, rid, user }) {
 		await saveRoomEncrypted(rid, value, user, Boolean(room.encrypted) !== Boolean(value));
 	},
 	async favorite({ value, rid }) {
-		await RoomsAsync.saveFavoriteById(rid, value.favorite, value.defaultValue);
+		await Rooms.saveFavoriteById(rid, value.favorite, value.defaultValue);
 	},
 	async roomAvatar({ value, rid, user }) {
 		await setRoomAvatar(rid, value, user);
 	},
 };
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		saveRoomSettings(rid: IRoom['_id'], settings: Partial<RoomSettings>): Promise<{ result: true; rid: IRoom['_id'] }>;
@@ -350,7 +368,6 @@ const fields: (keyof RoomSettings)[] = [
 	'systemMessages',
 	'default',
 	'joinCode',
-	'streamingOptions',
 	'retentionEnabled',
 	'retentionMaxAge',
 	'retentionExcludePinned',
@@ -359,6 +376,7 @@ const fields: (keyof RoomSettings)[] = [
 	'retentionOverrideGlobal',
 	'encrypted',
 	'favorite',
+	'sidepanel',
 ];
 
 const validate = <TRoomSetting extends keyof RoomSettings>(
@@ -388,20 +406,24 @@ async function save<TRoomSetting extends keyof RoomSettings>(
 	await saver?.(params);
 }
 
-async function saveRoomSettings(rid: IRoom['_id'], settings: Partial<RoomSettings>): Promise<{ result: true; rid: IRoom['_id'] }>;
-async function saveRoomSettings<RoomSettingName extends keyof RoomSettings>(
+export async function saveRoomSettings(
+	userId: IUser['_id'],
+	rid: IRoom['_id'],
+	settings: Partial<RoomSettings>,
+): Promise<{ result: true; rid: IRoom['_id'] }>;
+export async function saveRoomSettings<RoomSettingName extends keyof RoomSettings>(
+	userId: IUser['_id'],
 	rid: IRoom['_id'],
 	setting: RoomSettingName,
 	value: RoomSettings[RoomSettingName],
 ): Promise<{ result: true; rid: IRoom['_id'] }>;
-async function saveRoomSettings(
+export async function saveRoomSettings(
+	userId: IUser['_id'],
 	rid: IRoom['_id'],
 	settings: Partial<RoomSettings> | keyof RoomSettings,
 	value?: RoomSettings[keyof RoomSettings],
 ): Promise<{ result: true; rid: IRoom['_id'] }> {
-	const uid = Meteor.userId();
-
-	if (!uid) {
+	if (!userId) {
 		throw new Meteor.Error('error-invalid-user', 'Invalid user', {
 			function: 'RocketChat.saveRoomName',
 		});
@@ -424,7 +446,7 @@ async function saveRoomSettings(
 		});
 	}
 
-	const room = Rooms.findOneById(rid) as IRoom | undefined;
+	const room = await Rooms.findOneById(rid);
 
 	if (!room) {
 		throw new Meteor.Error('error-invalid-room', 'Invalid room', {
@@ -432,7 +454,7 @@ async function saveRoomSettings(
 		});
 	}
 
-	if (!(await hasPermissionAsync(uid, 'edit-room', rid))) {
+	if (!(await hasPermissionAsync(userId, 'edit-room', rid))) {
 		if (!(Object.keys(settings).includes('encrypted') && room.t === 'd')) {
 			throw new Meteor.Error('error-action-not-allowed', 'Editing room is not allowed', {
 				method: 'saveRoomSettings',
@@ -449,7 +471,7 @@ async function saveRoomSettings(
 		});
 	}
 
-	const user = (await Meteor.userAsync()) as (IUser & Required<Pick<IUser, 'username' | 'name'>>) | null;
+	const user = await Users.findOneById(userId, { projection: { username: 1, name: 1 } });
 	if (!user) {
 		throw new Meteor.Error('error-invalid-user', 'Invalid user', {
 			method: 'saveRoomSettings',
@@ -459,13 +481,13 @@ async function saveRoomSettings(
 	// validations
 	for await (const setting of Object.keys(settings) as (keyof RoomSettings)[]) {
 		await validate(setting, {
-			userId: uid,
+			userId,
 			value: settings[setting],
 			room,
 			rid,
 		});
 
-		if (setting === 'retentionOverrideGlobal') {
+		if (setting === 'retentionOverrideGlobal' && settings.retentionOverrideGlobal === false) {
 			delete settings.retentionMaxAge;
 			delete settings.retentionExcludePinned;
 			delete settings.retentionFilesOnly;
@@ -476,13 +498,15 @@ async function saveRoomSettings(
 	// saving data
 	for await (const setting of Object.keys(settings) as (keyof RoomSettings)[]) {
 		await save(setting, {
-			userId: uid,
-			user,
+			userId,
+			user: user as IUser & Required<Pick<IUser, 'username' | 'name'>>,
 			value: settings[setting],
 			room,
 			rid,
 		});
 	}
+
+	void notifyOnRoomChangedById(rid);
 
 	return {
 		result: true,
@@ -491,5 +515,14 @@ async function saveRoomSettings(
 }
 
 Meteor.methods<ServerMethods>({
-	saveRoomSettings,
+	saveRoomSettings: (...args) => {
+		const userId = Meteor.userId();
+		if (!userId) {
+			throw new Meteor.Error('error-invalid-user', 'Invalid user', {
+				function: 'RocketChat.saveRoomName',
+			});
+		}
+
+		return saveRoomSettings(userId, ...args);
+	},
 });

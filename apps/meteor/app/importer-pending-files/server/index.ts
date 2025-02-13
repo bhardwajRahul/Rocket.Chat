@@ -1,5 +1,9 @@
-import { PendingFileImporter } from './importer';
+import { PendingFileImporter } from './PendingFileImporter';
 import { Importers } from '../../importer/server';
-import { PendingFileImporterInfo } from './info';
 
-Importers.add(new PendingFileImporterInfo(), PendingFileImporter);
+Importers.add({
+	key: 'pending-files',
+	name: 'Pending Files',
+	visible: false,
+	importer: PendingFileImporter,
+});

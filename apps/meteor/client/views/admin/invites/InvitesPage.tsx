@@ -3,9 +3,11 @@ import { useMediaQuery } from '@rocket.chat/fuselage-hooks';
 import { useSetModal, useToastMessageDispatch, useTranslation, useEndpoint } from '@rocket.chat/ui-contexts';
 import { useQuery } from '@tanstack/react-query';
 import type { ReactElement } from 'react';
-import React, { useMemo } from 'react';
+import { useMemo } from 'react';
 
+import InviteRow from './InviteRow';
 import GenericModal from '../../../components/GenericModal';
+import GenericNoResults from '../../../components/GenericNoResults';
 import {
 	GenericTable,
 	GenericTableBody,
@@ -13,8 +15,7 @@ import {
 	GenericTableHeaderCell,
 	GenericTableLoadingTable,
 } from '../../../components/GenericTable';
-import Page from '../../../components/Page';
-import InviteRow from './InviteRow';
+import { Page, PageHeader, PageContent } from '../../../components/Page';
 
 const InvitesPage = (): ReactElement => {
 	const t = useTranslation();
@@ -23,18 +24,16 @@ const InvitesPage = (): ReactElement => {
 
 	const getInvites = useEndpoint('GET', '/v1/listInvites');
 
-	const { data, isLoading, refetch, isSuccess, isError } = useQuery(
-		['invites'],
-		async () => {
+	const { data, isLoading, refetch, isSuccess, isError } = useQuery({
+		queryKey: ['invites'],
+		queryFn: async () => {
 			const invites = await getInvites();
 			return invites;
 		},
-		{
-			onError: (error) => {
-				dispatchToastMessage({ type: 'error', message: error });
-			},
+		meta: {
+			apiErrorToastMessage: true,
 		},
-	);
+	});
 
 	const onRemove = (removeInvite: () => Promise<boolean>): void => {
 		const confirmRemove = async (): Promise<void> => {
@@ -68,23 +67,27 @@ const InvitesPage = (): ReactElement => {
 	const notSmall = useMediaQuery('(min-width: 768px)');
 
 	const headers = useMemo(
-		() => [
-			<GenericTableHeaderCell w={notSmall ? '20%' : '80%'}>{t('Token')}</GenericTableHeaderCell>,
-			notSmall && [
-				<GenericTableHeaderCell w='35%'>{t('Created_at')}</GenericTableHeaderCell>,
-				<GenericTableHeaderCell w='20%'>{t('Expiration')}</GenericTableHeaderCell>,
-				<GenericTableHeaderCell w='10%'>{t('Uses')}</GenericTableHeaderCell>,
-				<GenericTableHeaderCell w='10%'>{t('Uses_left')}</GenericTableHeaderCell>,
-				<GenericTableHeaderCell />,
-			],
-		],
+		() => (
+			<>
+				<GenericTableHeaderCell w={notSmall ? '20%' : '80%'}>{t('Token')}</GenericTableHeaderCell>
+				{notSmall && (
+					<>
+						<GenericTableHeaderCell w='35%'>{t('Created_at')}</GenericTableHeaderCell>
+						<GenericTableHeaderCell w='20%'>{t('Expiration')}</GenericTableHeaderCell>
+						<GenericTableHeaderCell w='10%'>{t('Uses')}</GenericTableHeaderCell>
+						<GenericTableHeaderCell w='10%'>{t('Uses_left')}</GenericTableHeaderCell>
+						<GenericTableHeaderCell />
+					</>
+				)}
+			</>
+		),
 		[notSmall, t],
 	);
 
 	return (
 		<Page>
-			<Page.Header title={t('Invites')} />
-			<Page.Content>
+			<PageHeader title={t('Invites')} />
+			<PageContent>
 				<>
 					{isLoading && (
 						<GenericTable>
@@ -94,7 +97,6 @@ const InvitesPage = (): ReactElement => {
 							</GenericTableBody>
 						</GenericTable>
 					)}
-
 					{isSuccess && data && data.length > 0 && (
 						<GenericTable>
 							<GenericTableHeader>{headers}</GenericTableHeader>
@@ -106,14 +108,7 @@ const InvitesPage = (): ReactElement => {
 							</GenericTableBody>
 						</GenericTable>
 					)}
-
-					{isSuccess && data && data.length === 0 && (
-						<States>
-							<StatesIcon name='magnifier' />
-							<StatesTitle>{t('No_results_found')}</StatesTitle>
-						</States>
-					)}
-
+					{isSuccess && data && data.length === 0 && <GenericNoResults />}
 					{isError && (
 						<States>
 							<StatesIcon name='warning' variation='danger' />
@@ -124,7 +119,7 @@ const InvitesPage = (): ReactElement => {
 						</States>
 					)}
 				</>
-			</Page.Content>
+			</PageContent>
 		</Page>
 	);
 };

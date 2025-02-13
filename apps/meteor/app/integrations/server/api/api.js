@@ -1,161 +1,78 @@
-import { VM, VMScript } from 'vm2';
-import { Meteor } from 'meteor/meteor';
-import { HTTP } from 'meteor/http';
+import { Integrations, Users } from '@rocket.chat/models';
 import { Random } from '@rocket.chat/random';
-import { Livechat } from 'meteor/rocketchat:livechat';
-import Fiber from 'fibers';
-import Future from 'fibers/future';
+import { Meteor } from 'meteor/meteor';
+import { WebApp } from 'meteor/webapp';
 import _ from 'underscore';
-import moment from 'moment';
-import { Integrations } from '@rocket.chat/models';
 
-import * as s from '../../../../lib/utils/stringUtils';
-import { incomingLogger } from '../logger';
+import { API, APIClass, defaultRateLimiterOptions } from '../../../api/server/api';
 import { processWebhookMessage } from '../../../lib/server/functions/processWebhookMessage';
-import { API, APIClass, defaultRateLimiterOptions } from '../../../api/server';
-import * as Models from '../../../models/server';
 import { settings } from '../../../settings/server';
+import { IsolatedVMScriptEngine } from '../lib/isolated-vm/isolated-vm';
+import { incomingLogger } from '../logger';
+import { addOutgoingIntegration } from '../methods/outgoing/addOutgoingIntegration';
+import { deleteOutgoingIntegration } from '../methods/outgoing/deleteOutgoingIntegration';
 
-const compiledScripts = {};
-function buildSandbox(store = {}) {
-	const sandbox = {
-		scriptTimeout(reject) {
-			return setTimeout(() => reject('timed out'), 3000);
-		},
-		_,
-		s,
-		console,
-		moment,
-		Fiber,
-		Promise,
-		Livechat,
-		Store: {
-			set(key, val) {
-				store[key] = val;
-				return val;
-			},
-			get(key) {
-				return store[key];
-			},
-		},
-		HTTP(method, url, options) {
-			try {
-				return {
-					result: HTTP.call(method, url, options),
-				};
-			} catch (error) {
-				return {
-					error,
-				};
-			}
-		},
-	};
-	Object.keys(Models)
-		.filter((k) => !k.startsWith('_'))
-		.forEach((k) => {
-			sandbox[k] = Models[k];
-		});
-	return { store, sandbox };
+const ivmEngine = new IsolatedVMScriptEngine(true);
+
+// eslint-disable-next-line no-unused-vars
+function getEngine(_integration) {
+	return ivmEngine;
 }
 
-function getIntegrationScript(integration) {
-	const compiledScript = compiledScripts[integration._id];
-	if (compiledScript && +compiledScript._updatedAt === +integration._updatedAt) {
-		return compiledScript.script;
-	}
-
-	const script = integration.scriptCompiled;
-	const { sandbox, store } = buildSandbox();
-	try {
-		incomingLogger.info({ msg: 'Will evaluate script of Trigger', integration: integration.name });
-		incomingLogger.debug(script);
-
-		const vmScript = new VMScript(`${script}; Script;`, 'script.js');
-		const vm = new VM({
-			sandbox,
-		});
-
-		const ScriptClass = vm.run(vmScript);
-
-		if (ScriptClass) {
-			compiledScripts[integration._id] = {
-				script: new ScriptClass(),
-				store,
-				_updatedAt: integration._updatedAt,
-			};
-
-			return compiledScripts[integration._id].script;
-		}
-	} catch (err) {
-		incomingLogger.error({
-			msg: 'Error evaluating Script in Trigger',
-			integration: integration.name,
-			script,
-			err,
-		});
-		throw API.v1.failure('error-evaluating-script');
-	}
-
-	incomingLogger.error({ msg: 'Class "Script" not in Trigger', integration: integration.name });
-	throw API.v1.failure('class-script-not-found');
-}
-
-function createIntegration(options, user) {
+async function createIntegration(options, user) {
 	incomingLogger.info({ msg: 'Add integration', integration: options.name });
 	incomingLogger.debug({ options });
 
-	Meteor.runAsUser(user._id, function () {
-		switch (options.event) {
-			case 'newMessageOnChannel':
-				if (options.data == null) {
-					options.data = {};
-				}
-				if (options.data.channel_name != null && options.data.channel_name.indexOf('#') === -1) {
-					options.data.channel_name = `#${options.data.channel_name}`;
-				}
-				return Meteor.call('addOutgoingIntegration', {
-					username: 'rocket.cat',
-					urls: [options.target_url],
-					name: options.name,
-					channel: options.data.channel_name,
-					triggerWords: options.data.trigger_words,
-				});
-			case 'newMessageToUser':
-				if (options.data.username.indexOf('@') === -1) {
-					options.data.username = `@${options.data.username}`;
-				}
-				return Meteor.call('addOutgoingIntegration', {
-					username: 'rocket.cat',
-					urls: [options.target_url],
-					name: options.name,
-					channel: options.data.username,
-					triggerWords: options.data.trigger_words,
-				});
-		}
-	});
+	switch (options.event) {
+		case 'newMessageOnChannel':
+			if (options.data == null) {
+				options.data = {};
+			}
+			if (options.data.channel_name != null && options.data.channel_name.indexOf('#') === -1) {
+				options.data.channel_name = `#${options.data.channel_name}`;
+			}
+			return addOutgoingIntegration(user._id, {
+				username: 'rocket.cat',
+				urls: [options.target_url],
+				name: options.name,
+				channel: options.data.channel_name,
+				triggerWords: options.data.trigger_words,
+			});
+		case 'newMessageToUser':
+			if (options.data.username.indexOf('@') === -1) {
+				options.data.username = `@${options.data.username}`;
+			}
+			return addOutgoingIntegration(user._id, {
+				username: 'rocket.cat',
+				urls: [options.target_url],
+				name: options.name,
+				channel: options.data.username,
+				triggerWords: options.data.trigger_words,
+			});
+	}
 
 	return API.v1.success();
 }
 
-function removeIntegration(options, user) {
+async function removeIntegration(options, user) {
 	incomingLogger.info('Remove integration');
 	incomingLogger.debug({ options });
 
-	const integrationToRemove = Promise.await(Integrations.findOneByUrl(options.target_url));
+	const integrationToRemove = await Integrations.findOneByUrl(options.target_url);
 	if (!integrationToRemove) {
 		return API.v1.failure('integration-not-found');
 	}
 
-	Meteor.runAsUser(user._id, () => Meteor.call('deleteOutgoingIntegration', integrationToRemove._id));
+	await deleteOutgoingIntegration(integrationToRemove._id, user._id);
 
 	return API.v1.success();
 }
 
 async function executeIntegrationRest() {
-	incomingLogger.info({ msg: 'Post integration:', integration: this.integration.name });
+	incomingLogger.info({ msg: 'Post integration:', integration: this.request.integration.name });
 	incomingLogger.debug({ urlParams: this.urlParams, bodyParams: this.bodyParams });
 
-	if (this.integration.enabled !== true) {
+	if (this.request.integration.enabled !== true) {
 		return {
 			statusCode: 503,
 			body: 'Service Unavailable',
@@ -163,21 +80,15 @@ async function executeIntegrationRest() {
 	}
 
 	const defaultValues = {
-		channel: this.integration.channel,
-		alias: this.integration.alias,
-		avatar: this.integration.avatar,
-		emoji: this.integration.emoji,
+		channel: this.request.integration.channel,
+		alias: this.request.integration.alias,
+		avatar: this.request.integration.avatar,
+		emoji: this.request.integration.emoji,
 	};
 
-	if (this.integration.scriptEnabled && this.integration.scriptCompiled && this.integration.scriptCompiled.trim() !== '') {
-		let script;
-		try {
-			script = getIntegrationScript(this.integration);
-		} catch (e) {
-			incomingLogger.error(e);
-			return API.v1.failure(e.message);
-		}
+	const scriptEngine = getEngine(this.request.integration);
 
+	if (scriptEngine.integrationHasValidScript(this.request.integration)) {
 		this.request.setEncoding('utf8');
 		const content_raw = this.request.read();
 
@@ -202,35 +113,16 @@ async function executeIntegrationRest() {
 			},
 		};
 
+		const result = await scriptEngine.processIncomingRequest({
+			integration: this.request.integration,
+			request,
+		});
+
 		try {
-			const { sandbox } = buildSandbox(compiledScripts[this.integration._id].store);
-			sandbox.script = script;
-			sandbox.request = request;
-
-			const vm = new VM({
-				timeout: 3000,
-				sandbox,
-			});
-
-			const scriptResult = vm.run(`
-				new Promise((resolve, reject) => {
-					Fiber(() => {
-						scriptTimeout(reject);
-						try {
-							resolve(script.process_incoming_request({ request: request }));
-						} catch(e) {
-							reject(e);
-						}
-					}).run();
-				}).catch((error) => { throw new Error(error); });
-			`);
-
-			const result = Future.fromPromise(scriptResult).wait();
-
 			if (!result) {
 				incomingLogger.debug({
 					msg: 'Process Incoming Request result of Trigger has no data',
-					integration: this.integration.name,
+					integration: this.request.integration.name,
 				});
 				return API.v1.success();
 			}
@@ -246,14 +138,14 @@ async function executeIntegrationRest() {
 
 			incomingLogger.debug({
 				msg: 'Process Incoming Request result of Trigger',
-				integration: this.integration.name,
+				integration: this.request.integration.name,
 				result: this.bodyParams,
 			});
 		} catch (err) {
 			incomingLogger.error({
 				msg: 'Error running Script in Trigger',
-				integration: this.integration.name,
-				script: this.integration.scriptCompiled,
+				integration: this.request.integration.name,
+				script: this.request.integration.scriptCompiled,
 				err,
 			});
 			return API.v1.failure('error-running-script');
@@ -262,12 +154,16 @@ async function executeIntegrationRest() {
 
 	// TODO: Turn this into an option on the integrations - no body means a success
 	// TODO: Temporary fix for https://github.com/RocketChat/Rocket.Chat/issues/7770 until the above is implemented
-	if (!this.bodyParams || (_.isEmpty(this.bodyParams) && !this.integration.scriptEnabled)) {
+	if (!this.bodyParams || (_.isEmpty(this.bodyParams) && !this.request.integration.scriptEnabled)) {
 		// return RocketChat.API.v1.failure('body-empty');
 		return API.v1.success();
 	}
 
-	this.bodyParams.bot = { i: this.integration._id };
+	if ((this.bodyParams.channel || this.bodyParams.roomId) && !this.request.integration.overrideDestinationChannelEnabled) {
+		return API.v1.failure('overriding destination channel is disabled for this integration');
+	}
+
+	this.bodyParams.bot = { i: this.request.integration._id };
 
 	try {
 		const message = await processWebhookMessage(this.bodyParams, this.user, defaultValues);
@@ -289,7 +185,7 @@ function addIntegrationRest() {
 	return createIntegration(this.bodyParams, this.user);
 }
 
-function removeIntegrationRest() {
+async function removeIntegrationRest() {
 	return removeIntegration(this.bodyParams, this.user);
 }
 
@@ -343,6 +239,47 @@ function integrationInfoRest() {
 }
 
 class WebHookAPI extends APIClass {
+	async authenticatedRoute(request) {
+		const payloadKeys = Object.keys(request.body);
+		const payloadIsWrapped = request.body && request.body.payload && payloadKeys.length === 1;
+		if (payloadIsWrapped && request.headers['content-type'] === 'application/x-www-form-urlencoded') {
+			try {
+				request.body = JSON.parse(request.body.payload);
+			} catch ({ message }) {
+				return {
+					error: {
+						statusCode: 400,
+						body: {
+							success: false,
+							error: message,
+						},
+					},
+				};
+			}
+		}
+
+		request.integration = await Integrations.findOne({
+			_id: request.params.integrationId,
+			token: decodeURIComponent(request.params.token),
+		});
+
+		if (!request.integration) {
+			incomingLogger.info(`Invalid integration id ${request.params.integrationId} or token ${request.params.token}`);
+
+			return {
+				error: {
+					statusCode: 404,
+					body: {
+						success: false,
+						error: 'Invalid integration id or token provided.',
+					},
+				},
+			};
+		}
+
+		return Users.findOneById(request.integration.userId);
+	}
+
 	/* Webhooks are not versioned, so we must not validate we know a version before adding a rate limiter */
 	shouldAddRateLimitToRoute(options) {
 		const { rateLimiterOptions } = options;
@@ -393,7 +330,7 @@ const Api = new WebHookAPI({
 	enableCors: true,
 	apiPath: 'hooks/',
 	auth: {
-		user() {
+		async user() {
 			const payloadKeys = Object.keys(this.bodyParams);
 			const payloadIsWrapped = this.bodyParams && this.bodyParams.payload && payloadKeys.length === 1;
 			if (payloadIsWrapped && this.request.headers['content-type'] === 'application/x-www-form-urlencoded') {
@@ -412,14 +349,12 @@ const Api = new WebHookAPI({
 				}
 			}
 
-			this.integration = Promise.await(
-				Integrations.findOne({
-					_id: this.request.params.integrationId,
-					token: decodeURIComponent(this.request.params.token),
-				}),
-			);
+			this.request.integration = await Integrations.findOne({
+				_id: this.request.params.integrationId,
+				token: decodeURIComponent(this.request.params.token),
+			});
 
-			if (!this.integration) {
+			if (!this.request.integration) {
 				incomingLogger.info(`Invalid integration id ${this.request.params.integrationId} or token ${this.request.params.token}`);
 
 				return {
@@ -433,8 +368,8 @@ const Api = new WebHookAPI({
 				};
 			}
 
-			const user = Models.Users.findOne({
-				_id: this.integration.userId,
+			const user = await Users.findOne({
+				_id: this.request.integration.userId,
 			});
 
 			return { user };
@@ -523,3 +458,7 @@ Api.addRoute(
 		post: removeIntegrationRest,
 	},
 );
+
+Meteor.startup(() => {
+	WebApp.connectHandlers.use(Api.router.router);
+});

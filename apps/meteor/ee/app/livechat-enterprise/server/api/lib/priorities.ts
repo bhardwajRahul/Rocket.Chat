@@ -1,8 +1,9 @@
-import { escapeRegExp } from '@rocket.chat/string-helpers';
-import { LivechatInquiry, LivechatPriority, LivechatRooms, Messages } from '@rocket.chat/models';
+import { Message } from '@rocket.chat/core-services';
 import type { ILivechatPriority, IOmnichannelRoom, IUser } from '@rocket.chat/core-typings';
-import type { FindOptions } from 'mongodb';
+import { LivechatInquiry, LivechatPriority, LivechatRooms } from '@rocket.chat/models';
 import type { PaginatedResult } from '@rocket.chat/rest-typings';
+import { escapeRegExp } from '@rocket.chat/string-helpers';
+import type { FindOptions } from 'mongodb';
 
 import { logger } from '../../lib/logger';
 
@@ -39,10 +40,7 @@ export async function findPriority({
 	};
 }
 
-export async function updatePriority(
-	_id: string,
-	data: Pick<ILivechatPriority, 'name'> & { reset?: boolean },
-): Promise<ILivechatPriority | null> {
+export async function updatePriority(_id: string, data: Pick<ILivechatPriority, 'name'> & { reset?: boolean }): Promise<ILivechatPriority> {
 	if (data.name) {
 		// If we want to enforce translated duplicates we need to change this
 		const priority = await LivechatPriority.findOneNameUsingRegex(data.name, { projection: { name: 1 } });
@@ -53,12 +51,12 @@ export async function updatePriority(
 
 	const createdResult = await LivechatPriority.updatePriority(_id, data.reset || false, data.name);
 
-	if (!createdResult.ok || !createdResult.value) {
+	if (!createdResult) {
 		logger.error(`Error updating priority: ${_id}. Unsuccessful result from mongodb. Result`, createdResult);
 		throw Error('error-unable-to-update-priority');
 	}
 
-	return createdResult.value;
+	return createdResult;
 }
 
 export const updateRoomPriority = async (
@@ -101,5 +99,13 @@ const addPriorityChangeHistoryToRoom = async (
 	user: Required<Pick<IUser, '_id' | 'username' | 'name'>>,
 	priority?: Pick<ILivechatPriority, 'name' | 'i18n'>,
 ) => {
-	await Messages.createPriorityHistoryWithRoomIdMessageAndUser(roomId, user, priority);
+	await Message.saveSystemMessage('omnichannel_priority_change_history', roomId, '', user, {
+		priorityData: {
+			definedBy: {
+				_id: user._id,
+				username: user.username,
+			},
+			...(priority && { priority }),
+		},
+	});
 };

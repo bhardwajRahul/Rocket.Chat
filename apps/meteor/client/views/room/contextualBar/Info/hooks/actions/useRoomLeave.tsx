@@ -1,8 +1,7 @@
 import type { IRoom } from '@rocket.chat/core-typings';
-import { useMutableCallback } from '@rocket.chat/fuselage-hooks';
+import { useEffectEvent } from '@rocket.chat/fuselage-hooks';
 import type { TranslationKey } from '@rocket.chat/ui-contexts';
-import { useSetModal, useToastMessageDispatch, useRoute, useMethod, useTranslation, usePermission } from '@rocket.chat/ui-contexts';
-import React from 'react';
+import { useRouter, useSetModal, useToastMessageDispatch, useMethod, useTranslation, usePermission } from '@rocket.chat/ui-contexts';
 
 import { LegacyRoomManager } from '../../../../../../../app/ui-utils/client';
 import { UiTextContext } from '../../../../../../../definition/IRoomTypeConfig';
@@ -15,16 +14,19 @@ export const useRoomLeave = (room: IRoom, joined = true) => {
 	const setModal = useSetModal();
 	const dispatchToastMessage = useToastMessageDispatch();
 	const leaveRoom = useMethod('leaveRoom');
-	const router = useRoute('home');
+	const router = useRouter();
 
 	const canLeave = usePermission(room.t === 'c' ? 'leave-c' : 'leave-p') && room.cl !== false && joined;
 
-	const handleLeave = useMutableCallback(() => {
+	const handleLeave = useEffectEvent(() => {
 		const leaveAction = async () => {
 			try {
 				await leaveRoom(room._id);
-				router.push({});
-				LegacyRoomManager.close(room._id);
+				router.navigate('/home');
+
+				if (room.name) {
+					LegacyRoomManager.close(`${room.t}${room.name}`);
+				}
 			} catch (error) {
 				dispatchToastMessage({ type: 'error', message: error });
 			}
@@ -38,7 +40,6 @@ export const useRoomLeave = (room: IRoom, joined = true) => {
 				text={t(warnText as TranslationKey, room.fname || room.name)}
 				confirmText={t('Leave_room')}
 				close={() => setModal(null)}
-				cancel={() => setModal(null)}
 				cancelText={t('Cancel')}
 				confirm={leaveAction}
 			/>,

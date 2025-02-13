@@ -1,18 +1,17 @@
-import { Meteor } from 'meteor/meteor';
-import { Match, check } from 'meteor/check';
-import _ from 'underscore';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
 import type { IRoom } from '@rocket.chat/core-typings';
-import { Rooms, Subscriptions } from '@rocket.chat/models';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Rooms, Subscriptions, Users } from '@rocket.chat/models';
+import { Match, check } from 'meteor/check';
+import { Meteor } from 'meteor/meteor';
 import type { FindOptions } from 'mongodb';
+import _ from 'underscore';
 
 import { hasPermissionAsync } from '../../app/authorization/server/functions/hasPermission';
-import { Users } from '../../app/models/server';
-import { getUserPreference } from '../../app/utils/server';
 import { settings } from '../../app/settings/server';
+import { getUserPreference } from '../../app/utils/server/lib/getUserPreference';
 import { trim } from '../../lib/utils/stringUtils';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		channelsList(filter: string, channelType: string, limit?: number, sort?: string): { channels: IRoom[] };
@@ -82,13 +81,20 @@ Meteor.methods<ServerMethods>({
 		}
 
 		if (channelType !== 'public' && (await hasPermissionAsync(userId, 'view-p-room'))) {
-			const user = Users.findOne(userId, {
-				fields: {
+			const user = await Users.findOne(userId, {
+				projection: {
 					'username': 1,
 					'settings.preferences.sidebarGroupByType': 1,
 				},
 			});
-			const userPref = getUserPreference(user, 'sidebarGroupByType');
+
+			if (!user) {
+				throw new Meteor.Error('error-invalid-user', 'Invalid user', {
+					method: 'channelsList',
+				});
+			}
+
+			const userPref = await getUserPreference(user, 'sidebarGroupByType');
 			// needs to negate globalPref because userPref represents its opposite
 			const groupByType = userPref !== undefined ? userPref : settings.get('UI_Group_Channels_By_Type');
 

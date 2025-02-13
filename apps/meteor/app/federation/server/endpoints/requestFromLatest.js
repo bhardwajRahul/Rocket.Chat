@@ -1,17 +1,30 @@
-import { EJSON } from 'meteor/ejson';
 import { FederationRoomEvents } from '@rocket.chat/models';
+import EJSON from 'ejson';
 
 import { API } from '../../../api/server';
-import { serverLogger } from '../lib/logger';
+import { apiDeprecationLogger } from '../../../lib/server/lib/deprecationWarningLogger';
+import { dispatchEvents } from '../handler';
 import { decryptIfNeeded } from '../lib/crypt';
 import { isFederationEnabled } from '../lib/isFederationEnabled';
-import { dispatchEvents } from '../handler';
+import { serverLogger } from '../lib/logger';
 
 API.v1.addRoute(
 	'federation.events.requestFromLatest',
 	{ authRequired: false },
 	{
 		async post() {
+			/*
+			The legacy federation has been deprecated for over a year
+			and no longer receives any updates. This feature also has
+			relevant security issues that weren't addressed.
+			Workspaces should migrate to the newer matrix federation.
+			*/
+			apiDeprecationLogger.endpoint(this.request.route, '8.0.0', this.response, 'Use Matrix Federation instead.');
+
+			if (!process.env.ENABLE_INSECURE_LEGACY_FEDERATION) {
+				return API.v1.failure('Deprecated. ENABLE_INSECURE_LEGACY_FEDERATION environment variable is needed to enable it.');
+			}
+
 			if (!isFederationEnabled()) {
 				return API.v1.failure('Federation not enabled');
 			}

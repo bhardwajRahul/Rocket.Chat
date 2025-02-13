@@ -1,11 +1,11 @@
 import { Meteor } from 'meteor/meteor';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Users } from '@rocket.chat/models';
 
 import { hasPermissionAsync } from '../../../../../app/authorization/server/functions/hasPermission';
-import { Users } from '../../../../../app/models/server';
 import { twoFactorRequired } from '../../../../../app/2fa/server/twoFactorRequired';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		'personalAccessTokens:regenerateToken'(params: { tokenName: string }): Promise<string>;
@@ -26,7 +26,7 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		const tokenExist = Users.findPersonalAccessTokenByTokenNameAndUserId({
+		const tokenExist = await Users.findPersonalAccessTokenByTokenNameAndUserId({
 			userId: uid,
 			tokenName,
 		});

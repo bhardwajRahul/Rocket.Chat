@@ -1,35 +1,18 @@
-import { Sidebar, Dropdown } from '@rocket.chat/fuselage';
-import { useMutableCallback } from '@rocket.chat/fuselage-hooks';
-import type { HTMLAttributes, VFC } from 'react';
-import React, { useRef } from 'react';
-import { createPortal } from 'react-dom';
+import { Sidebar } from '@rocket.chat/fuselage';
+import { GenericMenu } from '@rocket.chat/ui-client';
+import type { HTMLAttributes } from 'react';
+import { useTranslation } from 'react-i18next';
 
-import { AccountBox } from '../../../../app/ui-utils/client';
-import AdministrationList from '../../../components/AdministrationList/AdministrationList';
-import { useReactiveValue } from '../../../hooks/useReactiveValue';
-import { useDropdownVisibility } from '../hooks/useDropdownVisibility';
+import { useAdministrationMenu } from './hooks/useAdministrationMenu';
 
-const Administration: VFC<Omit<HTMLAttributes<HTMLElement>, 'is'>> = (props) => {
-	const reference = useRef(null);
-	const target = useRef(null);
+type AdministrationProps = Omit<HTMLAttributes<HTMLElement>, 'is'>;
 
-	const { isVisible, toggle } = useDropdownVisibility({ reference, target });
+const Administration = (props: AdministrationProps) => {
+	const { t } = useTranslation();
 
-	const getAccountBoxItems = useMutableCallback(() => AccountBox.getItems());
-	const accountBoxItems = useReactiveValue(getAccountBoxItems);
+	const sections = useAdministrationMenu();
 
-	return (
-		<>
-			<Sidebar.TopBar.Action icon='menu' onClick={(): void => toggle()} {...props} ref={reference} />
-			{isVisible &&
-				createPortal(
-					<Dropdown reference={reference} ref={target}>
-						<AdministrationList accountBoxItems={accountBoxItems} onDismiss={(): void => toggle(false)} />
-					</Dropdown>,
-					document.body,
-				)}
-		</>
-	);
+	return <GenericMenu sections={sections} title={t('Administration')} is={Sidebar.TopBar.Action} {...props} />;
 };
 
 export default Administration;

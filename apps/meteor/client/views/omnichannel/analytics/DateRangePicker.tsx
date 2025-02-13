@@ -1,10 +1,12 @@
-import { Box, InputBox, Menu, Field } from '@rocket.chat/fuselage';
-import { useMutableCallback } from '@rocket.chat/fuselage-hooks';
-import { useTranslation } from '@rocket.chat/ui-contexts';
+import { Box, InputBox, Menu, Field, FieldLabel, FieldRow } from '@rocket.chat/fuselage';
+import { useEffectEvent } from '@rocket.chat/fuselage-hooks';
 import type { Moment } from 'moment';
 import moment from 'moment';
-import type { ComponentProps } from 'react';
-import React, { useState, useMemo, useEffect } from 'react';
+import type { ComponentProps, FormEvent } from 'react';
+import { useState, useMemo, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
+
+moment.locale('en');
 
 type DateRangePickerProps = Omit<ComponentProps<typeof Box>, 'onChange'> & {
 	onChange(range: { start: string; end: string }): void;
@@ -25,12 +27,12 @@ const getWeekRange = (daysToSubtractFromStart: number, daysToSubtractFromEnd: nu
 });
 
 const DateRangePicker = ({ onChange = () => undefined, ...props }: DateRangePickerProps) => {
-	const t = useTranslation();
+	const { t } = useTranslation();
 	const [range, setRange] = useState({ start: '', end: '' });
 
 	const { start, end } = range;
 
-	const handleStart = useMutableCallback(({ currentTarget }) => {
+	const handleStart = useEffectEvent(({ currentTarget }: FormEvent<HTMLInputElement>) => {
 		const rangeObj = {
 			start: currentTarget.value,
 			end: range.end,
@@ -39,7 +41,7 @@ const DateRangePicker = ({ onChange = () => undefined, ...props }: DateRangePick
 		onChange(rangeObj);
 	});
 
-	const handleEnd = useMutableCallback(({ currentTarget }) => {
+	const handleEnd = useEffectEvent(({ currentTarget }: FormEvent<HTMLInputElement>) => {
 		const rangeObj = {
 			end: currentTarget.value,
 			start: range.start,
@@ -48,7 +50,7 @@ const DateRangePicker = ({ onChange = () => undefined, ...props }: DateRangePick
 		onChange(rangeObj);
 	});
 
-	const handleRange = useMutableCallback((range) => {
+	const handleRange = useEffectEvent((range: { start: string; end: string }) => {
 		setRange(range);
 		onChange(range);
 	});
@@ -111,22 +113,22 @@ const DateRangePicker = ({ onChange = () => undefined, ...props }: DateRangePick
 	return (
 		<Box {...props}>
 			<Box mi='neg-x4' height='full' display='flex' flexDirection='row'>
-				<Field mi='x4' flexShrink={1} flexGrow={1}>
-					<Field.Label>{t('Start')}</Field.Label>
-					<Field.Row>
+				<Field mi={4} flexShrink={1} flexGrow={1}>
+					<FieldLabel>{t('Start')}</FieldLabel>
+					<FieldRow>
 						<Box height='x40' display='flex' width='full'>
 							<InputBox type='date' onChange={handleStart} max={todayDate} value={start} />
 						</Box>
-					</Field.Row>
+					</FieldRow>
 				</Field>
-				<Field mi='x4' flexShrink={1} flexGrow={1}>
-					<Field.Label>{t('End')}</Field.Label>
-					<Field.Row>
+				<Field mi={4} flexShrink={1} flexGrow={1}>
+					<FieldLabel>{t('End')}</FieldLabel>
+					<FieldRow>
 						<Box height='x40' display='flex' width='full'>
 							<InputBox type='date' onChange={handleEnd} min={start} max={todayDate} value={end} />
 						</Box>
-						<Menu mis='x8' options={options} />
-					</Field.Row>
+						<Menu mis={8} options={options} />
+					</FieldRow>
 				</Field>
 			</Box>
 		</Box>

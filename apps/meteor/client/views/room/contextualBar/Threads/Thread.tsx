@@ -3,35 +3,36 @@ import { css } from '@rocket.chat/css-in-js';
 import { Box, Modal, Skeleton } from '@rocket.chat/fuselage';
 import { useLocalStorage } from '@rocket.chat/fuselage-hooks';
 import { useLayoutContextualBarExpanded, useToastMessageDispatch, useTranslation, useUserId } from '@rocket.chat/ui-contexts';
-import type { VFC } from 'react';
-import React from 'react';
 
-import VerticalBar from '../../../../components/VerticalBar';
-import VerticalBarAction from '../../../../components/VerticalBar/VerticalBarAction';
-import VerticalBarActions from '../../../../components/VerticalBar/VerticalBarActions';
-import VerticalBarClose from '../../../../components/VerticalBar/VerticalBarClose';
-import VerticalBarHeader from '../../../../components/VerticalBar/VerticalBarHeader';
-import VerticalBarInnerContent from '../../../../components/VerticalBar/VerticalBarInnerContent';
-import { useTabBarClose } from '../../contexts/ToolboxContext';
-import { useGoToThreadList } from '../../hooks/useGoToThreadList';
-import ChatProvider from '../../providers/ChatProvider';
 import ThreadChat from './components/ThreadChat';
 import ThreadSkeleton from './components/ThreadSkeleton';
 import ThreadTitle from './components/ThreadTitle';
 import { useThreadMainMessageQuery } from './hooks/useThreadMainMessageQuery';
 import { useToggleFollowingThreadMutation } from './hooks/useToggleFollowingThreadMutation';
+import {
+	Contextualbar,
+	ContextualbarHeader,
+	ContextualbarAction,
+	ContextualbarActions,
+	ContextualbarClose,
+	ContextualbarBack,
+	ContextualbarInnerContent,
+} from '../../../../components/Contextualbar';
+import { useRoomToolbox } from '../../contexts/RoomToolboxContext';
+import { useGoToThreadList } from '../../hooks/useGoToThreadList';
+import ChatProvider from '../../providers/ChatProvider';
 
 type ThreadProps = {
 	tmid: IMessage['_id'];
 };
 
-const Thread: VFC<ThreadProps> = ({ tmid }) => {
+const Thread = ({ tmid }: ThreadProps) => {
 	const goToThreadList = useGoToThreadList({ replace: true });
-	const closeTabBar = useTabBarClose();
+	const { closeTab } = useRoomToolbox();
 
 	const mainMessageQueryResult = useThreadMainMessageQuery(tmid, {
 		onDelete: () => {
-			closeTabBar();
+			closeTab();
 		},
 	});
 
@@ -42,7 +43,7 @@ const Thread: VFC<ThreadProps> = ({ tmid }) => {
 	const [expanded, setExpanded] = useLocalStorage('expand-threads', false);
 
 	const uid = useUserId();
-	const following = uid ? mainMessageQueryResult.data?.replies?.includes(uid) ?? false : false;
+	const following = uid ? (mainMessageQueryResult.data?.replies?.includes(uid) ?? false) : false;
 	const toggleFollowingMutation = useToggleFollowingThreadMutation({
 		onError: (error) => {
 			dispatchToastMessage({ type: 'error', message: error });
@@ -50,7 +51,7 @@ const Thread: VFC<ThreadProps> = ({ tmid }) => {
 	});
 
 	const handleBackdropClick = () => {
-		closeTabBar();
+		closeTab();
 	};
 
 	const handleGoBack = () => {
@@ -72,14 +73,14 @@ const Thread: VFC<ThreadProps> = ({ tmid }) => {
 	};
 
 	const handleClose = () => {
-		closeTabBar();
+		closeTab();
 	};
 
 	return (
-		<VerticalBarInnerContent>
+		<ContextualbarInnerContent>
 			{canExpand && expanded && <Modal.Backdrop onClick={handleBackdropClick} />}
 			<Box flexGrow={1} position={expanded ? 'static' : 'relative'}>
-				<VerticalBar
+				<Contextualbar
 					rcx-thread-view
 					className={
 						canExpand && expanded
@@ -88,7 +89,7 @@ const Thread: VFC<ThreadProps> = ({ tmid }) => {
 									@media (min-width: 780px) and (max-width: 1135px) {
 										max-width: calc(100% - var(--sidebar-width)) !important;
 									}
-							  `
+								`
 							: undefined
 					}
 					position={expanded ? 'fixed' : 'absolute'}
@@ -100,28 +101,28 @@ const Thread: VFC<ThreadProps> = ({ tmid }) => {
 					insetBlock={0}
 					border='none'
 				>
-					<VerticalBarHeader expanded={expanded}>
-						<VerticalBarAction name='arrow-back' title={t('Back_to_threads')} onClick={handleGoBack} />
+					<ContextualbarHeader expanded={expanded}>
+						<ContextualbarBack onClick={handleGoBack} />
 						{(mainMessageQueryResult.isLoading && <Skeleton width='100%' />) ||
 							(mainMessageQueryResult.isSuccess && <ThreadTitle mainMessage={mainMessageQueryResult.data} />) ||
 							null}
-						<VerticalBarActions>
+						<ContextualbarActions>
 							{canExpand && (
-								<VerticalBarAction
+								<ContextualbarAction
 									name={expanded ? 'arrow-collapse' : 'arrow-expand'}
 									title={expanded ? t('Collapse') : t('Expand')}
 									onClick={handleToggleExpand}
 								/>
 							)}
-							<VerticalBarAction
+							<ContextualbarAction
 								name={following ? 'bell' : 'bell-off'}
 								title={following ? t('Following') : t('Not_Following')}
-								disabled={!mainMessageQueryResult.isSuccess || toggleFollowingMutation.isLoading}
+								disabled={!mainMessageQueryResult.isSuccess || toggleFollowingMutation.isPending}
 								onClick={handleToggleFollowing}
 							/>
-							<VerticalBarClose onClick={handleClose} />
-						</VerticalBarActions>
-					</VerticalBarHeader>
+							<ContextualbarClose onClick={handleClose} />
+						</ContextualbarActions>
+					</ContextualbarHeader>
 
 					{(mainMessageQueryResult.isLoading && <ThreadSkeleton />) ||
 						(mainMessageQueryResult.isSuccess && (
@@ -130,9 +131,9 @@ const Thread: VFC<ThreadProps> = ({ tmid }) => {
 							</ChatProvider>
 						)) ||
 						null}
-				</VerticalBar>
+				</Contextualbar>
 			</Box>
-		</VerticalBarInnerContent>
+		</ContextualbarInnerContent>
 	);
 };
 

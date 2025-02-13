@@ -1,37 +1,30 @@
-import { Skeleton } from '@rocket.chat/fuselage';
-import { Header } from '@rocket.chat/ui-client';
+import { FeaturePreview, FeaturePreviewOff, FeaturePreviewOn } from '@rocket.chat/ui-client';
 import type { ReactElement } from 'react';
-import React from 'react';
 
-import VerticalBarSkeleton from '../../components/VerticalBar/VerticalBarSkeleton';
-import MessageListSkeleton from '../../components/message/list/MessageListSkeleton';
-import ComposerSkeleton from './Room/ComposerSkeleton';
+import HeaderSkeleton from './Header/HeaderSkeleton';
+import HeaderSkeletonV2 from './HeaderV2/HeaderSkeleton';
+import RoomComposerSkeleton from './composer/RoomComposer/RoomComposerSkeleton';
 import RoomLayout from './layout/RoomLayout';
+import MessageListSkeleton from '../../components/message/list/MessageListSkeleton';
 
 const RoomSkeleton = (): ReactElement => (
 	<RoomLayout
 		header={
-			<Header>
-				<Header.Avatar>
-					<Skeleton variant='rect' width={36} height={36} />
-				</Header.Avatar>
-				<Header.Content>
-					<Header.Content.Row>
-						<Skeleton width='10%' />
-					</Header.Content.Row>
-					<Header.Content.Row>
-						<Skeleton width='30%' />
-					</Header.Content.Row>
-				</Header.Content>
-			</Header>
+			<FeaturePreview feature='newNavigation'>
+				<FeaturePreviewOff>
+					<HeaderSkeleton />
+				</FeaturePreviewOff>
+				<FeaturePreviewOn>
+					<HeaderSkeletonV2 />
+				</FeaturePreviewOn>
+			</FeaturePreview>
 		}
 		body={
 			<>
 				<MessageListSkeleton />
-				<ComposerSkeleton />
+				<RoomComposerSkeleton />
 			</>
 		}
-		aside={<VerticalBarSkeleton />}
 	/>
 );
 export default RoomSkeleton;

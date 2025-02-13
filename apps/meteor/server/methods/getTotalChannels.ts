@@ -1,9 +1,8 @@
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Rooms } from '@rocket.chat/models';
 import { Meteor } from 'meteor/meteor';
 
-import { Rooms } from '../../app/models/server';
-
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		getTotalChannels(): number;
@@ -18,9 +17,6 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		const query = {
-			t: 'c',
-		};
-		return Rooms.find(query).count();
+		return Rooms.col.countDocuments({ t: 'c' });
 	},
 });

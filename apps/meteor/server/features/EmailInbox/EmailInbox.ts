@@ -1,13 +1,13 @@
+import type { IEmailInbox } from '@rocket.chat/core-typings';
+import { EmailInbox, EmailMessageHistory } from '@rocket.chat/models';
 import { Meteor } from 'meteor/meteor';
 import nodemailer from 'nodemailer';
 import type Mail from 'nodemailer/lib/mailer';
-import type { IEmailInbox } from '@rocket.chat/core-typings';
-import { EmailInbox, EmailMessageHistory } from '@rocket.chat/models';
 
-import { IMAPInterceptor } from '../../email/IMAPInterceptor';
 import { onEmailReceived } from './EmailInbox_Incoming';
 import { logger } from './logger';
 import { settings } from '../../../app/settings/server';
+import { IMAPInterceptor } from '../../email/IMAPInterceptor';
 
 export type Inbox = {
 	imap: IMAPInterceptor;
@@ -18,9 +18,7 @@ export type Inbox = {
 export const inboxes = new Map<string, Inbox>();
 
 export async function configureEmailInboxes(): Promise<void> {
-	const emailInboxesCursor = EmailInbox.find({
-		active: true,
-	});
+	const emailInboxesCursor = EmailInbox.findActive();
 
 	logger.info('Clearing old email inbox registrations');
 	for (const { imap } of inboxes.values()) {
@@ -45,7 +43,7 @@ export async function configureEmailInboxes(): Promise<void> {
 								tlsOptions: {
 									rejectUnauthorized: false,
 								},
-						  }
+							}
 						: {}),
 				},
 				{
@@ -58,22 +56,19 @@ export async function configureEmailInboxes(): Promise<void> {
 				emailInboxRecord._id,
 			);
 
-			imap.on(
-				'email',
-				Meteor.bindEnvironment(async (email) => {
-					if (!email.messageId) {
-						return;
-					}
+			imap.on('email', async (email) => {
+				if (!email.messageId) {
+					return;
+				}
 
-					try {
-						await EmailMessageHistory.create({ _id: email.messageId, email: emailInboxRecord.email });
-						void onEmailReceived(email, emailInboxRecord.email, emailInboxRecord.department);
-					} catch (e: any) {
-						// In case the email message history has been received by other instance..
-						logger.error(e);
-					}
-				}),
-			);
+				try {
+					await EmailMessageHistory.create({ _id: email.messageId, email: emailInboxRecord.email });
+					void onEmailReceived(email, emailInboxRecord.email, emailInboxRecord.department);
+				} catch (e: any) {
+					// In case the email message history has been received by other instance..
+					logger.error(e);
+				}
+			});
 
 			await imap.start();
 

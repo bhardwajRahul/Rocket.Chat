@@ -1,11 +1,11 @@
-import { Meteor } from 'meteor/meteor';
-import { OAuthApps } from '@rocket.chat/models';
 import type { IOAuthApps } from '@rocket.chat/core-typings';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { OAuthAccessTokens, OAuthApps, OAuthAuthCodes } from '@rocket.chat/models';
+import { Meteor } from 'meteor/meteor';
 
 import { hasPermissionAsync } from '../../../../authorization/server/functions/hasPermission';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		deleteOAuthApp(applicationId: IOAuthApps['_id']): boolean;
@@ -30,6 +30,9 @@ Meteor.methods<ServerMethods>({
 		}
 
 		await OAuthApps.deleteOne({ _id: applicationId });
+
+		await OAuthAccessTokens.deleteMany({ clientId: application.clientId });
+		await OAuthAuthCodes.deleteMany({ clientId: application.clientId });
 
 		return true;
 	},

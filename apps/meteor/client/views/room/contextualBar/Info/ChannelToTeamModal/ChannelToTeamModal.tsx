@@ -1,5 +1,5 @@
 import type { IRoom } from '@rocket.chat/core-typings';
-import React, { useState } from 'react';
+import { useState } from 'react';
 
 import ChannelToTeamConfirmation from './ChannelToTeamConfirmation';
 import ChannelToTeamSelection from './ChannelToTeamSelection';
@@ -22,11 +22,17 @@ const ChannelToTeamModal = ({ onCancel, onConfirm }: ChannelToTeamModalProps) =>
 		return <ChannelToTeamConfirmation onCancel={onCancel} onConfirm={() => onConfirm(teamId)} />;
 	}
 
+	const handleChange = (value: string | string[]) => {
+		if (typeof value === 'string') {
+			setTeamId(value);
+		}
+	};
+
 	return (
 		<ChannelToTeamSelection
 			onCancel={onCancel}
 			onConfirm={() => setStep(CHANNEL_TO_TEAM_STEPS.CONFIRMATION)}
-			onChange={setTeamId}
+			onChange={handleChange}
 			teamId={teamId}
 		/>
 	);

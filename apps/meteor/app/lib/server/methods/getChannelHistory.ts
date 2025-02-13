@@ -1,17 +1,16 @@
-import { Meteor } from 'meteor/meteor';
+import type { IMessage, MessageTypesValues } from '@rocket.chat/core-typings';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Messages, Subscriptions, Rooms } from '@rocket.chat/models';
 import { check } from 'meteor/check';
-import _ from 'underscore';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
-import type { IMessage } from '@rocket.chat/core-typings';
-import { Messages, Subscriptions } from '@rocket.chat/models';
+import { Meteor } from 'meteor/meteor';
 
 import { canAccessRoomAsync } from '../../../authorization/server';
 import { hasPermissionAsync } from '../../../authorization/server/functions/hasPermission';
-import { Rooms } from '../../../models/server';
+import { settings } from '../../../settings/server/cached';
 import { normalizeMessagesForUser } from '../../../utils/server/lib/normalizeMessagesForUser';
 import { getHiddenSystemMessages } from '../lib/getHiddenSystemMessages';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		getChannelHistory(params: {
@@ -40,7 +39,7 @@ Meteor.methods<ServerMethods>({
 			return false;
 		}
 
-		const room = Rooms.findOneById(rid);
+		const room = await Rooms.findOneById(rid);
 		if (!room) {
 			return false;
 		}
@@ -64,11 +63,14 @@ Meteor.methods<ServerMethods>({
 		}
 
 		// Verify oldest is a date if it exists
-		if (oldest !== undefined && !_.isDate(oldest)) {
+
+		if (oldest !== undefined && {}.toString.call(oldest) !== '[object Date]') {
 			throw new Meteor.Error('error-invalid-date', 'Invalid date', { method: 'getChannelHistory' });
 		}
 
-		const hiddenMessageTypes = getHiddenSystemMessages(room);
+		const hiddenSystemMessages = settings.get<MessageTypesValues[]>('Hide_System_Messages');
+
+		const hiddenMessageTypes = getHiddenSystemMessages(room, hiddenSystemMessages);
 
 		const options: Record<string, unknown> = {
 			sort: {
@@ -87,7 +89,7 @@ Meteor.methods<ServerMethods>({
 						options,
 						showThreadMessages,
 						inclusive,
-				  ).toArray()
+					).toArray()
 				: await Messages.findVisibleByRoomIdBetweenTimestampsNotContainingTypes(
 						rid,
 						oldest,
@@ -96,9 +98,9 @@ Meteor.methods<ServerMethods>({
 						options,
 						showThreadMessages,
 						inclusive,
-				  ).toArray();
+					).toArray();
 
-		const messages = normalizeMessagesForUser(records, fromUserId);
+		const messages = await normalizeMessagesForUser(records, fromUserId);
 
 		if (unreads) {
 			let unreadNotLoaded = 0;

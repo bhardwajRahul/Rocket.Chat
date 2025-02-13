@@ -1,24 +1,32 @@
-import { LivechatRooms, Messages, Uploads, Users, LivechatVisitors } from '@rocket.chat/models';
-import { PdfWorker } from '@rocket.chat/pdf-worker';
-import type { Templates } from '@rocket.chat/pdf-worker';
-import { parse } from '@rocket.chat/message-parser';
-import type { Root } from '@rocket.chat/message-parser';
-import type { IMessage, IUser, IRoom, IUpload, ILivechatVisitor, ILivechatAgent } from '@rocket.chat/core-typings';
-import { isQuoteAttachment, isFileAttachment, isFileImageAttachment } from '@rocket.chat/core-typings';
+import type { Readable } from 'stream';
+
 import {
 	ServiceClass,
 	Upload as uploadService,
 	Message as messageService,
 	Room as roomService,
-	QueueWorker as queueService,
 	Translation as translationService,
 	Settings as settingsService,
-	License as licenseService,
 } from '@rocket.chat/core-services';
 import type { IOmnichannelTranscriptService } from '@rocket.chat/core-services';
-import { guessTimezone, guessTimezoneFromOffset } from '@rocket.chat/tools';
+import type {
+	IMessage,
+	IUser,
+	IRoom,
+	IUpload,
+	ILivechatVisitor,
+	ILivechatAgent,
+	IOmnichannelSystemMessage,
+} from '@rocket.chat/core-typings';
+import { isQuoteAttachment, isFileAttachment, isFileImageAttachment } from '@rocket.chat/core-typings';
+import type { Logger } from '@rocket.chat/logger';
+import { parse } from '@rocket.chat/message-parser';
+import type { Root } from '@rocket.chat/message-parser';
+import { LivechatRooms, Messages, Uploads, Users, LivechatVisitors } from '@rocket.chat/models';
+import { PdfWorker } from '@rocket.chat/pdf-worker';
+import { guessTimezone, guessTimezoneFromOffset, streamToBuffer } from '@rocket.chat/tools';
 
-import type { Logger } from '../../../../apps/meteor/server/lib/logger/Logger';
+import { getAllSystemMessagesKeys, getSystemMessage } from './livechatSystemMessages';
 
 const isPromiseRejectedResult = (result: any): result is PromiseRejectedResult => result.status === 'rejected';
 
@@ -33,14 +41,29 @@ type WorkDetailsWithSource = WorkDetails & {
 
 type Quote = { name: string; ts?: Date; md: Root };
 
-type MessageData = Pick<IMessage, '_id' | 'ts' | 'u' | 'msg' | 'md'> & {
+export type MessageData = Pick<
+	IOmnichannelSystemMessage,
+	| 'msg'
+	| '_id'
+	| 'u'
+	| 'ts'
+	| 'md'
+	| 't'
+	| 'navigation'
+	| 'transferData'
+	| 'requestData'
+	| 'webRtcCallEndTs'
+	| 'comment'
+	| 'slaData'
+	| 'priorityData'
+> & {
 	files: ({ name?: string; buffer: Buffer | null; extension?: string } | undefined)[];
 	quotes: (Quote | undefined)[];
 };
 
 type WorkerData = {
 	siteName: string;
-	visitor: ILivechatVisitor | null;
+	visitor: Pick<ILivechatVisitor, '_id' | 'username' | 'name' | 'visitorEmails'> | null;
 	agent: ILivechatAgent | undefined;
 	closedAt?: Date;
 	messages: MessageData[];
@@ -50,6 +73,12 @@ type WorkerData = {
 	translations: { key: string; value: string }[];
 };
 
+const customSprintfInterpolation = (template: string, values: Record<string, string>) => {
+	return template.replace(/{{(\w+)}}/g, (match, key) => {
+		return typeof values[key] !== 'undefined' ? values[key] : match;
+	});
+};
+
 export class OmnichannelTranscript extends ServiceClass implements IOmnichannelTranscriptService {
 	protected name = 'omnichannel-transcript';
 
@@ -57,31 +86,19 @@ export class OmnichannelTranscript extends ServiceClass implements IOmnichannelT
 
 	private log: Logger;
 
+	// this is initialized as undefined and will be set when the first pdf is requested.
+	// if we try to initialize it at the start of the service using IIAFE, for some reason i18next doesn't return translations, maybe i18n isn't initialised yet
+	private translations?: Array<{ key: string; value: string }> = undefined;
+
 	maxNumberOfConcurrentJobs = 25;
 
 	currentJobNumber = 0;
-
-	shouldWork = false;
 
 	constructor(loggerClass: typeof Logger) {
 		super();
 		this.worker = new PdfWorker('chat-transcript');
 		// eslint-disable-next-line new-cap
 		this.log = new loggerClass('OmnichannelTranscript');
-
-		this.onEvent('license.module', ({ module, valid }) => {
-			if (module === 'scalability') {
-				this.shouldWork = valid;
-			}
-		});
-	}
-
-	async started(): Promise<void> {
-		try {
-			this.shouldWork = await licenseService.hasLicense('scalability');
-		} catch (e: unknown) {
-			// ignore
-		}
 	}
 
 	async getTimezone(user?: { utcOffset?: string | number }): Promise<string> {
@@ -100,49 +117,31 @@ export class OmnichannelTranscript extends ServiceClass implements IOmnichannelT
 		}
 	}
 
-	private getMessagesFromRoom({ rid }: { rid: string }): Promise<IMessage[]> {
+	private async getMessagesFromRoom({ rid }: { rid: string }): Promise<IMessage[]> {
+		const showSystemMessages = await settingsService.get<boolean>('Livechat_transcript_show_system_messages');
+
 		// Closing message should not appear :)
-		return Messages.findLivechatMessagesWithoutClosing(rid, {
+		return Messages.findLivechatMessagesWithoutTypes(rid, ['command'], showSystemMessages, {
 			sort: { ts: 1 },
-			projection: { _id: 1, msg: 1, u: 1, t: 1, ts: 1, attachments: 1, files: 1, md: 1 },
+			projection: {
+				_id: 1,
+				msg: 1,
+				u: 1,
+				t: 1,
+				ts: 1,
+				attachments: 1,
+				files: 1,
+				md: 1,
+				navigation: 1,
+				requestData: 1,
+				transferData: 1,
+				webRtcCallEndTs: 1,
+				comment: 1,
+				priorityData: 1,
+				slaData: 1,
+				rid: 1,
+			},
 		}).toArray();
-	}
-
-	async requestTranscript({ details }: { details: WorkDetails }): Promise<void> {
-		if (!this.shouldWork) {
-			this.log.info(`Not requesting transcript for room ${details.rid} because scalability module is not enabled`);
-			return;
-		}
-		this.log.info(`Requesting transcript for room ${details.rid} by user ${details.userId}`);
-		const room = await LivechatRooms.findOneById(details.rid);
-		if (!room) {
-			throw new Error('room-not-found');
-		}
-
-		if (room.open) {
-			throw new Error('room-still-open');
-		}
-
-		if (!room.v) {
-			throw new Error('improper-room-state');
-		}
-
-		// Don't request a transcript if there's already one requested :)
-		if (room.pdfTranscriptRequested) {
-			// TODO: use logger
-			this.log.info(`Transcript already requested for room ${details.rid}`);
-			return;
-		}
-
-		await LivechatRooms.setTranscriptRequestedPdfById(details.rid);
-
-		// Even when processing is done "in-house", we still need to queue the work
-		// to avoid blocking the request
-		this.log.info(`Queuing work for room ${details.rid}`);
-		await queueService.queueWork('work', `${this.name}.workOnPdf`, {
-			template: 'omnichannel-transcript',
-			details: { userId: details.userId, rid: details.rid, from: this.name },
-		});
 	}
 
 	private getQuotesFromMessage(message: IMessage): Quote[] {
@@ -171,22 +170,49 @@ export class OmnichannelTranscript extends ServiceClass implements IOmnichannelT
 		return quotes;
 	}
 
-	private async getMessagesData(userId: string, messages: IMessage[]): Promise<MessageData[]> {
+	private getSystemMessage(message: IMessage): false | MessageData {
+		if (!message.t) {
+			return false;
+		}
+
+		const systemMessageDefinition = getSystemMessage(message.t);
+
+		if (!systemMessageDefinition) {
+			return false;
+		}
+
+		const args = systemMessageDefinition.data && systemMessageDefinition?.data(message, this.getTranslation.bind(this));
+
+		const systemMessage = this.getTranslation(systemMessageDefinition.message, args);
+
+		return {
+			...message,
+			msg: systemMessage,
+			files: [],
+			quotes: [],
+		};
+	}
+
+	async getMessagesData(messages: IMessage[]): Promise<MessageData[]> {
 		const messagesData: MessageData[] = [];
 		for await (const message of messages) {
-			if (!message.attachments || !message.attachments.length) {
+			const systemMessage = this.getSystemMessage(message);
+
+			if (systemMessage) {
+				messagesData.push(systemMessage);
+				continue;
+			}
+
+			if (!message.attachments?.length) {
 				// If there's no attachment and no message, what was sent? lol
 				messagesData.push({
-					_id: message._id,
+					...message,
 					files: [],
 					quotes: [],
-					ts: message.ts,
-					u: message.u,
-					msg: message.msg,
-					md: message.md,
 				});
 				continue;
 			}
+
 			const files = [];
 			const quotes = [];
 
@@ -216,7 +242,7 @@ export class OmnichannelTranscript extends ServiceClass implements IOmnichannelT
 				}
 				let file = message.files?.map((v) => ({ _id: v._id, name: v.name })).find((file) => file.name === attachment.title);
 				if (!file) {
-					this.log.debug(`File ${attachment.title} not found in room ${message.rid}!`);
+					this.log.warn(`File ${attachment.title} not found in room ${message.rid}!`);
 					// For some reason, when an image is uploaded from clipboard, it doesn't have a file :(
 					// So, we'll try to get the FILE_ID from the `title_link` prop which has the format `/file-upload/FILE_ID/FILE_NAME` using a regex
 					const fileId = attachment.title_link?.match(/\/file-upload\/(.*)\/.*/)?.[1];
@@ -230,7 +256,7 @@ export class OmnichannelTranscript extends ServiceClass implements IOmnichannelT
 				}
 
 				if (!file) {
-					this.log.error(`File ${attachment.title} not found in room ${message.rid}!`);
+					this.log.warn(`File ${attachment.title} not found in room ${message.rid}!`);
 					// ignore attachments without file
 					files.push({ name: attachment.title, buffer: null });
 					continue;
@@ -244,8 +270,21 @@ export class OmnichannelTranscript extends ServiceClass implements IOmnichannelT
 					continue;
 				}
 
-				const fileBuffer = await uploadService.getFileBuffer({ userId, file: uploadedFile });
-				files.push({ name: file.name, buffer: fileBuffer, extension: uploadedFile.extension });
+				try {
+					const fileBuffer = await uploadService.getFileBuffer({ file: uploadedFile });
+					files.push({ name: file.name, buffer: fileBuffer, extension: uploadedFile.extension });
+				} catch (e: unknown) {
+					this.log.error(`Failed to get file ${file._id}`, e);
+					// Push empty buffer so parser processes this as "unsupported file"
+					files.push({ name: file.name, buffer: null });
+
+					// TODO: this is a NATS error message, even when we shouldn't tie it, since it's the only way we have right now we'll live with it for a while
+					if ((e as Error).message === 'MAX_PAYLOAD_EXCEEDED') {
+						this.log.error(
+							`File is too big to be processed by NATS. See NATS config for allowing bigger messages to be sent between services`,
+						);
+					}
+				}
 			}
 
 			// When you send a file message, the things you type in the modal are not "msg", they're in "description" of the attachment
@@ -266,24 +305,64 @@ export class OmnichannelTranscript extends ServiceClass implements IOmnichannelT
 		return messagesData;
 	}
 
-	private async getTranslations(): Promise<Array<{ key: string; value: string }>> {
-		const keys: string[] = ['Agent', 'Date', 'Customer', 'Not_assigned', 'Time', 'Chat_transcript', 'This_attachment_is_not_supported'];
+	private async getAllTranslations(): Promise<Array<{ key: string; value: string }>> {
+		const keys: string[] = [
+			'Agent',
+			'Date',
+			'Customer',
+			'Not_assigned',
+			'Time',
+			'Chat_transcript',
+			'This_attachment_is_not_supported',
+			'Livechat_transfer_to_agent',
+			'Livechat_transfer_to_agent_with_a_comment',
+			'Livechat_transfer_to_department',
+			'Livechat_transfer_to_department_with_a_comment',
+			'Livechat_transfer_return_to_the_queue',
+			'Livechat_transfer_return_to_the_queue_with_a_comment',
+			'Livechat_transfer_to_agent_auto_transfer_unanswered_chat',
+			'Livechat_transfer_return_to_the_queue_auto_transfer_unanswered_chat',
+			'Livechat_visitor_transcript_request',
+			'Livechat_user_sent_chat_transcript_to_visitor',
+			'WebRTC_call_ended_message',
+			'WebRTC_call_declined_message',
+			'Without_SLA',
+			'Unknown_User',
+			'Livechat_transfer_failed_fallback',
+			'Unprioritized',
+			'Unknown_User',
+			'Without_priority',
+			...getAllSystemMessagesKeys(),
+		];
 
-		return Promise.all(
-			keys.map(async (key) => {
-				return {
-					key,
-					value: await translationService.translateToServerLanguage(key),
-				};
-			}),
-		);
+		return translationService.translateMultipleToServerLanguage(keys);
 	}
 
-	async workOnPdf({ template, details }: { template: Templates; details: WorkDetailsWithSource }): Promise<void> {
-		if (!this.shouldWork) {
-			this.log.info(`Processing transcript for room ${details.rid} by user ${details.userId} - Stopped (no scalability license found)`);
-			return;
+	private getTranslation(translationKey: string, args?: Record<string, string>): string {
+		const translationValue = this.translations?.find(({ key }) => key === translationKey)?.value;
+
+		if (!translationValue) {
+			return translationKey;
 		}
+
+		if (!args) {
+			return translationValue;
+		}
+
+		const translation = customSprintfInterpolation(translationValue, args);
+
+		return translation;
+	}
+
+	private async loadTranslations() {
+		if (!this.translations) {
+			this.translations = await this.getAllTranslations();
+		}
+
+		return this.translations;
+	}
+
+	async workOnPdf({ details }: { details: WorkDetailsWithSource }): Promise<void> {
 		this.log.info(`Processing transcript for room ${details.rid} by user ${details.userId} - Received from queue`);
 		if (this.maxNumberOfConcurrentJobs <= this.currentJobNumber) {
 			this.log.error(`Processing transcript for room ${details.rid} by user ${details.userId} - Too many concurrent jobs, queuing again`);
@@ -298,18 +377,20 @@ export class OmnichannelTranscript extends ServiceClass implements IOmnichannelT
 			const messages = await this.getMessagesFromRoom({ rid: room._id });
 
 			const visitor =
-				room.v && (await LivechatVisitors.findOneById(room.v._id, { projection: { _id: 1, name: 1, username: 1, visitorEmails: 1 } }));
+				room.v &&
+				(await LivechatVisitors.findOneEnabledById(room.v._id, { projection: { _id: 1, name: 1, username: 1, visitorEmails: 1 } }));
 			const agent =
 				room.servedBy && (await Users.findOneAgentById(room.servedBy._id, { projection: { _id: 1, name: 1, username: 1, utcOffset: 1 } }));
 
-			const messagesData = await this.getMessagesData(details.userId, messages);
+			const translations = await this.loadTranslations();
 
-			const [siteName, dateFormat, timeAndDateFormat, timezone, translations] = await Promise.all([
+			const messagesData = await this.getMessagesData(messages);
+
+			const [siteName, dateFormat, timeAndDateFormat, timezone] = await Promise.all([
 				settingsService.get<string>('Site_Name'),
 				settingsService.get<string>('Message_DateFormat'),
 				settingsService.get<string>('Message_TimeAndDateFormat'),
 				this.getTimezone(agent),
-				this.getTranslations(),
 			]);
 			const data = {
 				visitor,
@@ -323,7 +404,7 @@ export class OmnichannelTranscript extends ServiceClass implements IOmnichannelT
 				translations,
 			};
 
-			await this.doRender({ template, data, details });
+			await this.doRender({ data, details });
 		} catch (error) {
 			await this.pdfFailed({ details, e: error as Error });
 		} finally {
@@ -331,37 +412,25 @@ export class OmnichannelTranscript extends ServiceClass implements IOmnichannelT
 		}
 	}
 
-	async doRender({ template, data, details }: { template: Templates; data: WorkerData; details: WorkDetailsWithSource }): Promise<void> {
-		const buf: Uint8Array[] = [];
-		let outBuff = Buffer.alloc(0);
+	async doRender({ data, details }: { data: WorkerData; details: WorkDetailsWithSource }): Promise<void> {
 		const transcriptText = await translationService.translateToServerLanguage('Transcript');
 
-		const stream = await this.worker.renderToStream({ template, data });
-		stream.on('data', (chunk) => {
-			buf.push(chunk);
-		});
-		stream.on('end', () => {
-			outBuff = Buffer.concat(buf);
+		const stream = await this.worker.renderToStream({ data });
+		const outBuff = await streamToBuffer(stream as Readable);
 
-			return uploadService
-				.uploadFile({
-					userId: details.userId,
-					buffer: outBuff,
-					details: {
-						// transcript_{company-name)_{date}_{hour}.pdf
-						name: `${transcriptText}_${data.siteName}_${new Intl.DateTimeFormat('en-US').format(new Date())}_${
-							data.visitor?.name || data.visitor?.username || 'Visitor'
-						}.pdf`,
-						type: 'application/pdf',
-						rid: details.rid,
-						// Rocket.cat is the goat
-						userId: 'rocket.cat',
-						size: outBuff.length,
-					},
-				})
-				.then((file) => this.pdfComplete({ details, file }))
-				.catch((e) => this.pdfFailed({ details, e }));
-		});
+		try {
+			const { rid } = await roomService.createDirectMessage({ to: details.userId, from: 'rocket.cat' });
+			const [rocketCatFile, transcriptFile] = await this.uploadFiles({
+				details,
+				buffer: outBuff,
+				roomIds: [rid, details.rid],
+				data,
+				transcriptText,
+			});
+			await this.pdfComplete({ details, transcriptFile, rocketCatFile });
+		} catch (e: any) {
+			this.pdfFailed({ details, e });
+		}
 	}
 
 	private async pdfFailed({ details, e }: { details: WorkDetailsWithSource; e: Error }): Promise<void> {
@@ -387,7 +456,49 @@ export class OmnichannelTranscript extends ServiceClass implements IOmnichannelT
 		});
 	}
 
-	private async pdfComplete({ details, file }: { details: WorkDetailsWithSource; file: IUpload }): Promise<void> {
+	private async uploadFiles({
+		details,
+		buffer,
+		roomIds,
+		data,
+		transcriptText,
+	}: {
+		details: WorkDetailsWithSource;
+		buffer: Buffer;
+		roomIds: string[];
+		data: any;
+		transcriptText: string;
+	}): Promise<IUpload[]> {
+		return Promise.all(
+			roomIds.map((roomId) => {
+				return uploadService.uploadFile({
+					userId: details.userId,
+					buffer,
+					details: {
+						// transcript_{company-name}_{date}_{hour}.pdf
+						name: `${transcriptText}_${data.siteName}_${new Intl.DateTimeFormat('en-US').format(new Date())}_${
+							data.visitor?.name || data.visitor?.username || 'Visitor'
+						}.pdf`,
+						type: 'application/pdf',
+						rid: roomId,
+						// Rocket.cat is the goat
+						userId: 'rocket.cat',
+						size: buffer.length,
+					},
+				});
+			}),
+		);
+	}
+
+	private async pdfComplete({
+		details,
+		transcriptFile,
+		rocketCatFile,
+	}: {
+		details: WorkDetailsWithSource;
+		transcriptFile: IUpload;
+		rocketCatFile: IUpload;
+	}): Promise<void> {
 		this.log.info(`Transcript for room ${details.rid} by user ${details.userId} - Complete`);
 		const user = await Users.findOneById(details.userId);
 		if (!user) {
@@ -395,17 +506,14 @@ export class OmnichannelTranscript extends ServiceClass implements IOmnichannelT
 		}
 		// Send the file to the livechat room where this was requested, to keep it in context
 		try {
-			const [, { rid }] = await Promise.all([
-				LivechatRooms.setPdfTranscriptFileIdById(details.rid, file._id),
-				roomService.createDirectMessage({ to: details.userId, from: 'rocket.cat' }),
-			]);
+			await LivechatRooms.setPdfTranscriptFileIdById(details.rid, transcriptFile._id);
 
 			this.log.info(`Transcript for room ${details.rid} by user ${details.userId} - Sending success message to user`);
 			const result = await Promise.allSettled([
 				uploadService.sendFileMessage({
 					roomId: details.rid,
 					userId: 'rocket.cat',
-					file,
+					file: transcriptFile,
 					message: {
 						// Translate from service
 						msg: await translationService.translateToServerLanguage('pdf_success_message'),
@@ -413,9 +521,9 @@ export class OmnichannelTranscript extends ServiceClass implements IOmnichannelT
 				}),
 				// Send the file to the user who requested it, so they can download it
 				uploadService.sendFileMessage({
-					roomId: rid,
+					roomId: rocketCatFile.rid || '',
 					userId: 'rocket.cat',
-					file,
+					file: rocketCatFile,
 					message: {
 						// Translate from service
 						msg: await translationService.translate('pdf_success_message', user),

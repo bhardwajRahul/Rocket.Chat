@@ -1,35 +1,40 @@
-import type { IMessage } from '@rocket.chat/core-typings';
-import { Box, Icon, TextInput, Select, Margins, Callout, Throbber } from '@rocket.chat/fuselage';
+import type { IMessage, IThreadMainMessage } from '@rocket.chat/core-typings';
+import { Box, Icon, TextInput, Select, Callout, Throbber } from '@rocket.chat/fuselage';
 import { useResizeObserver, useAutoFocus, useLocalStorage, useDebouncedValue } from '@rocket.chat/fuselage-hooks';
 import { useTranslation, useUserId } from '@rocket.chat/ui-contexts';
-import type { FormEvent, ReactElement, VFC } from 'react';
-import React, { useMemo, useState, useCallback } from 'react';
+import type { FormEvent, ReactElement } from 'react';
+import { useMemo, useState, useCallback } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 
-import ScrollableContentWrapper from '../../../../components/ScrollableContentWrapper';
-import VerticalBarClose from '../../../../components/VerticalBar/VerticalBarClose';
-import VerticalBarContent from '../../../../components/VerticalBar/VerticalBarContent';
-import VerticalBarHeader from '../../../../components/VerticalBar/VerticalBarHeader';
-import VerticalBarIcon from '../../../../components/VerticalBar/VerticalBarIcon';
-import VerticalBarText from '../../../../components/VerticalBar/VerticalBarText';
+import ThreadListItem from './components/ThreadListItem';
+import { useThreadsList } from './hooks/useThreadsList';
+import {
+	ContextualbarClose,
+	ContextualbarContent,
+	ContextualbarHeader,
+	ContextualbarIcon,
+	ContextualbarTitle,
+	ContextualbarEmptyContent,
+	ContextualbarSection,
+} from '../../../../components/Contextualbar';
+import { VirtuosoScrollbars } from '../../../../components/CustomScrollbars';
 import { useRecordList } from '../../../../hooks/lists/useRecordList';
 import { AsyncStatePhase } from '../../../../lib/asyncState';
 import type { ThreadsListOptions } from '../../../../lib/lists/ThreadsList';
 import { useRoom, useRoomSubscription } from '../../contexts/RoomContext';
-import { useTabBarClose } from '../../contexts/ToolboxContext';
+import { useRoomToolbox } from '../../contexts/RoomToolboxContext';
 import { useGoToThread } from '../../hooks/useGoToThread';
-import ThreadListItem from './components/ThreadListItem';
-import { useThreadsList } from './hooks/useThreadsList';
 
 type ThreadType = 'all' | 'following' | 'unread';
 
-const ThreadList: VFC = () => {
+const ThreadList = () => {
 	const t = useTranslation();
 
-	const closeTabBar = useTabBarClose();
+	const { closeTab } = useRoomToolbox();
+
 	const handleTabBarCloseButtonClick = useCallback(() => {
-		closeTabBar();
-	}, [closeTabBar]);
+		closeTab();
+	}, [closeTab]);
 
 	const { ref, contentBoxSize: { inlineSize = 378, blockSize = 1 } = {} } = useResizeObserver<HTMLElement>({
 		debounceDelay: 200,
@@ -78,7 +83,6 @@ const ThreadList: VFC = () => {
 				return {
 					rid,
 					text,
-					type: 'all',
 				};
 			}
 			switch (type) {
@@ -114,39 +118,27 @@ const ThreadList: VFC = () => {
 
 	return (
 		<>
-			<VerticalBarHeader>
-				<VerticalBarIcon name='thread' />
-				<VerticalBarText>{t('Threads')}</VerticalBarText>
-				<VerticalBarClose onClick={handleTabBarCloseButtonClick} />
-			</VerticalBarHeader>
-
-			<VerticalBarContent paddingInline={0} ref={ref}>
-				<Box
-					display='flex'
-					flexDirection='row'
-					p={24}
-					borderBlockEndWidth={2}
-					borderBlockEndStyle='solid'
-					borderBlockEndColor='extra-light'
-					flexShrink={0}
-				>
-					<Box display='flex' flexDirection='row' flexGrow={1} mi={-4}>
-						<Margins inline={4}>
-							<TextInput
-								placeholder={t('Search_Messages')}
-								addon={<Icon name='magnifier' size='x20' />}
-								ref={autoFocusRef}
-								value={searchText}
-								onChange={handleSearchTextChange}
-							/>
-							<Select flexGrow={0} width={110} options={typeOptions} value={type} onChange={handleTypeChange} />
-						</Margins>
-					</Box>
+			<ContextualbarHeader>
+				<ContextualbarIcon name='thread' />
+				<ContextualbarTitle>{t('Threads')}</ContextualbarTitle>
+				<ContextualbarClose onClick={handleTabBarCloseButtonClick} />
+			</ContextualbarHeader>
+			<ContextualbarSection>
+				<TextInput
+					placeholder={t('Search_Messages')}
+					addon={<Icon name='magnifier' size='x20' />}
+					ref={autoFocusRef}
+					value={searchText}
+					onChange={handleSearchTextChange}
+				/>
+				<Box w='x144' mis={8}>
+					<Select options={typeOptions} value={type} onChange={(value) => handleTypeChange(String(value))} />
 				</Box>
-
+			</ContextualbarSection>
+			<ContextualbarContent paddingInline={0}>
 				{phase === AsyncStatePhase.LOADING && (
 					<Box pi={24} pb={12}>
-						<Throbber size={12} />
+						<Throbber size='x12' />
 					</Box>
 				)}
 
@@ -156,13 +148,9 @@ const ThreadList: VFC = () => {
 					</Callout>
 				)}
 
-				{phase !== AsyncStatePhase.LOADING && itemCount === 0 && (
-					<Box p={24} color='annotation' textAlign='center' width='full'>
-						{t('No_Threads')}
-					</Box>
-				)}
+				{phase !== AsyncStatePhase.LOADING && itemCount === 0 && <ContextualbarEmptyContent title={t('No_Threads')} />}
 
-				<Box flexGrow={1} flexShrink={1} overflow='hidden' display='flex'>
+				<Box flexGrow={1} flexShrink={1} overflow='hidden' display='flex' ref={ref}>
 					{!error && itemCount > 0 && items.length > 0 && (
 						<Virtuoso
 							style={{
@@ -175,12 +163,12 @@ const ThreadList: VFC = () => {
 									? (): void => undefined
 									: (start): void => {
 											loadMoreItems(start, Math.min(50, itemCount - start));
-									  }
+										}
 							}
 							overscan={25}
 							data={items}
-							components={{ Scroller: ScrollableContentWrapper }}
-							itemContent={(_index, data: IMessage): ReactElement => (
+							components={{ Scroller: VirtuosoScrollbars }}
+							itemContent={(_index, data: IThreadMainMessage): ReactElement => (
 								<ThreadListItem
 									thread={data}
 									unread={subscription?.tunread ?? []}
@@ -192,7 +180,7 @@ const ThreadList: VFC = () => {
 						/>
 					)}
 				</Box>
-			</VerticalBarContent>
+			</ContextualbarContent>
 		</>
 	);
 };

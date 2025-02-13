@@ -1,15 +1,15 @@
-import { Meteor } from 'meteor/meteor';
-import { check } from 'meteor/check';
 import type { IMessage } from '@rocket.chat/core-typings';
-import type { ServerMethods } from '@rocket.chat/ui-contexts';
+import type { ServerMethods } from '@rocket.chat/ddp-client';
+import { Messages, Rooms } from '@rocket.chat/models';
+import { check } from 'meteor/check';
+import { Meteor } from 'meteor/meteor';
 
-import { settings } from '../../app/settings/server';
-import { Messages, Rooms } from '../../app/models/server';
 import { canAccessRoomAsync } from '../../app/authorization/server';
+import { settings } from '../../app/settings/server';
 import { readThread } from '../../app/threads/server/functions';
 import { callbacks } from '../../lib/callbacks';
 
-declare module '@rocket.chat/ui-contexts' {
+declare module '@rocket.chat/ddp-client' {
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	interface ServerMethods {
 		readThreads(tmid: IMessage['_id']): void;
@@ -26,22 +26,25 @@ Meteor.methods<ServerMethods>({
 			});
 		}
 
-		const thread = Messages.findOneById(tmid);
+		const thread = await Messages.findOneById(tmid);
 		if (!thread) {
 			return;
 		}
 
 		const user = (await Meteor.userAsync()) ?? undefined;
 
-		const room = Rooms.findOneById(thread.rid);
+		const room = await Rooms.findOneById(thread.rid);
+		if (!room) {
+			throw new Meteor.Error('error-room-does-not-exist', 'This room does not exist', { method: 'getThreadMessages' });
+		}
 
 		if (!(await canAccessRoomAsync(room, user))) {
 			throw new Meteor.Error('error-not-allowed', 'Not allowed', { method: 'getThreadMessages' });
 		}
 
-		callbacks.run('beforeReadMessages', thread.rid, user?._id);
-		await readThread({ userId: user?._id, rid: thread.rid, tmid });
+		await callbacks.run('beforeReadMessages', thread.rid, user?._id);
 		if (user?._id) {
+			await readThread({ userId: user._id, rid: thread.rid, tmid });
 			callbacks.runAsync('afterReadMessages', room._id, { uid: user._id, tmid });
 		}
 	},
